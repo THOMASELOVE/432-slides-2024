@@ -22,7 +22,7 @@ format:
 3.  Fitting Linear Models
 4.  Setting Up Lab 1, due Tuesday 2024-01-23 at Noon.
 
-The most relevant sections of the Course Notes are Chapters 1-5.
+Course Notes: most relevant material in Chapters 1-5.
 
 ## Today's R Setup
 
@@ -34,7 +34,6 @@ library(broom) # for tidy, glance and augment
 library(car) # for boxCox and vif
 library(Epi) # for twoby2
 library(GGally) # for ggpairs
-library(knitr) # for kable
 library(MKinfer) # for boot.t.test
 library(mosaic) # for favstats
 library(naniar) # deal with missing values
@@ -189,14 +188,12 @@ ggplot(nh1982, aes(sample = SBP_diff)) +
        y = "Observed SBP1-SBP2 values")
 ```
 
-## Normal Q-Q plot of Paired SBP Differences
+## Paired SBP Differences
 
 ```{r}
 #| echo: false
 #| eval: true
 #| fig-asp: 1
-#| fig-width: 3
-#| fig-align: center
 
 nh1982 <- nh1982 |> mutate(SBP_diff = sbp1 - sbp2)
 
@@ -243,8 +240,7 @@ boot.t.test(nh1982$SBP_diff, conf.level = 0.9,
 ```{r}
 #| echo: true
 favstats(sbp3 ~ hospital, data = nh1982) |>
-  select(-missing) |>
-  kable(digits = 2)
+  select(-missing) 
 ```
 
 ```{r}
@@ -258,7 +254,7 @@ ggplot(nh1982, aes(x = factor(hospital), y = sbp3)) +
   labs(title = "SBP (3rd reading) by Hospitalization")
 ```
 
-## SBP (3rd reading) vs. Hospitalization Status
+## SBP (3rd reading) vs. Hospitalization
 
 ```{r}
 #| echo: false
@@ -288,11 +284,9 @@ Want a 90% confidence interval for the difference in means of SBP3 for people wh
 
 lm2 <- lm(sbp3 ~ hospital, data = nh1982)
 
-tidy(lm2, conf.int = TRUE, conf.level = 0.90) |>
-  kable(digits = 2)
+tidy(lm2, conf.int = TRUE, conf.level = 0.90) 
 
-glance(lm2) |> select(r.squared, sigma) |> 
-  kable(digits = c(5,2))
+glance(lm2) |> select(r.squared, sigma) 
 ```
 
 # Comparing Rates (see Course Notes, Chapter 4)
@@ -426,8 +420,7 @@ vif(lm(inv_sbp ~ age + sroh + hospital, data = nh1982))
 
 m1 <- lm(inv_sbp ~ age, data = nh1982)
 
-tidy(m1, conf.int = TRUE, conf.level = 0.9) |>
-  kable(digits = 2)
+tidy(m1, conf.int = TRUE, conf.level = 0.9)
 ```
 
 ## Tidied Coefficients for Model `m2`
@@ -437,8 +430,7 @@ tidy(m1, conf.int = TRUE, conf.level = 0.9) |>
 
 m2 <- lm(inv_sbp ~ age + sroh + hospital, data = nh1982)
 
-tidy(m2, conf.int = TRUE, conf.level = 0.9) |>
-  kable(digits = 2)
+tidy(m2, conf.int = TRUE, conf.level = 0.9)
 ```
 
 ## Fit Summaries for Models `m1` and `m2`
@@ -448,8 +440,7 @@ tidy(m2, conf.int = TRUE, conf.level = 0.9) |>
 bind_rows(glance(m1), glance(m2)) |>
   mutate(model = c("m1", "m2")) |> 
   select(model, r2 = r.squared, adjr2 = adj.r.squared, 
-         sigma, AIC, BIC, nobs, df, df.residual) |>
-  kable(digits = c(0, 3, 3, 3, 1, 1, 0, 0))
+         sigma, AIC, BIC, nobs, df, df.residual) 
 ```
 
 Which model appears to fit the data better?
@@ -475,7 +466,7 @@ new_person <- tibble(age = 29, sroh = "Good", hospital = "No")
 bind_rows(augment(m1, newdata = new_person), 
           augment(m2, newdata = new_person)) |>
   mutate(model = c("m1", "m2"), fit_meansbp = 1000/.fitted) |>
-  select(model, fit_meansbp, .fitted, age, sroh, hospital) |> kable(digits = 3)
+  select(model, fit_meansbp, .fitted, age, sroh, hospital) 
 ```
 
 # Setting Up Lab 1, due Tuesday 2024-01-23 at Noon
@@ -492,14 +483,15 @@ There is a Quarto template for Lab 1, in addition to the data set.
 
 ## Lab 1 Question 2
 
-Create a linear regression model to predict obese_pct as a function of food_env and median_income (all of these are quantitative variables.)
+Create a linear regression model to predict `obese_pct` as a function of `food_env` and `median_income` (all of these are quantitative variables.)
 
-a.  Specify and fit the model, interpret food_env coefficient.
+a.  Specify and fit the model, interpret `food_env` coefficient.
 b.  Evaluate quality of model in terms of adherence to regression assumptions via four key residual plots.
-c.  Build a nice table comparing your model to a simple regression for obese_pct using only food_env, and then reflect on your findings.
+c.  Build a nice table comparing your model to a simple regression for `obese_pct` using only `food_env`, and then reflect on your findings.
 
 ## Next Week?
 
--   Lab 1 due Tuesday Noon (Answer Sketch available Wednesday)
+-   Lab 1 due Tuesday Noon 
+    - Answer Sketch available Wednesday
 -   Developing Inferences Using Survey Weights
 -   Linear Regression and ANOVA/ANCOVA models
