@@ -19,14 +19,14 @@ format:
 
 - Fitting two-factor ANOVA/ANCOVA models with `lm`
     - Incorporating an interaction between factors
-    - Incorporating polynomial terms
-    - Incorporating restricted cubic splines
+    - Incorporating a quantitative covariate
+    - Using a quadratic polynomial fit
 - Regression Diagnostics via Residual Plots
 - Validating / evaluating results with `yardstick`
 
 ### Appendix
 
-How the `class4im` data were created from `smart_ohio.csv`
+How the `c4im` data were created from `smart_ohio.csv`
 
 ## Today's R Setup
 
@@ -38,6 +38,7 @@ knitr::opts_chunk$set(comment = NA)
 library(janitor)
 library(broom)
 library(gt)
+library(car)
 library(mosaic)
 library(patchwork)       
 library(naniar)
@@ -50,9 +51,9 @@ library(tidyverse)
 theme_set(theme_bw()) 
 ```
 
-# The `class4im` data
+# The `c4im` data
 
-## The `class4im` data
+## The `c4im` data
 
 - 894 subjects in Cleveland-Elyria with `bmi` and no history of diabetes (missing values singly imputed: assume MAR)
 - All subjects have `hx_diabetes` (all 0), and are located in the `MMSA` labeled Cleveland-Elyria.
@@ -75,9 +76,9 @@ Variable | Description
 
 ```{r}
 #| echo: true
-class4im <- read_rds("c04/data/class4im.Rds")
-class4im |> n_miss()
-identical(nrow(class4im), n_distinct(class4im$ID))
+c4im <- read_rds("c04/data/c4im.Rds")
+c4im |> n_miss()
+identical(nrow(c4im), n_distinct(c4im$ID))
 ```
 
 ### Splitting the Sample
@@ -85,46 +86,75 @@ identical(nrow(class4im), n_distinct(class4im$ID))
 ```{r}
 #| echo: true
 set.seed(432)    ## for future replication
-class4im_split <- initial_split(class4im, prop = 3/4)
-train_c4im <- training(class4im_split)
-test_c4im <- testing(class4im_split)
-c(nrow(class4im), nrow(train_c4im), nrow(test_c4im))
+c4im_split <- initial_split(c4im, prop = 3/4)
+train_c4im <- training(c4im_split)
+test_c4im <- testing(c4im_split)
+c(nrow(c4im), nrow(train_c4im), nrow(test_c4im))
 ```
 
 ## Models We'll Build Today
 
 1. Predict `bmi` using `exer_any` and `genhealth` (both categorical)
-    - without and then with an interaction between the two predictors
-2. Add in a quantitative covariate, `fruit_day`, first simply as a main (and linear) effect
-
-## More Models We'll Build
-
-3. Incorporate the `fruit_day` information using a quadratic polynomial instead.
-4. Incorporate the `fruit_day` information using a restricted cubic spline with 4 knots instead.
+    - without then with an interaction between the predictors
+2. Add in a quantitative covariate, `fruit_day`.
+3. Incorporate `fruit_day` using a quadratic polynomial.
 
 We'll fit all of these models with `lm`, and assess them in terms of in-sample (training) fit and out-of-sample (testing) performance.
 
-## We might, but won't transform `bmi`.
+## Consider transforming `bmi`?
+
+```{r}
+#| echo: true
+
+m0 <- lm(bmi ~ exerany + health, data = train_c4im)
+boxCox(m0)
+```
+
+## Should we transform `bmi`?
 
 ```{r}
 p1 <- ggplot(train_c4im, aes(x = bmi)) + 
     geom_histogram(col = "navy", fill = "gold", bins = 20)
 
-p2 <- ggplot(train_c4im, aes(x = log(bmi))) + 
-    geom_histogram(col = "navy", fill = "gold", bins = 20)
+p2 <- ggplot(train_c4im, aes(x = 1/bmi)) + 
+    geom_histogram(col = "navy", fill = "green", bins = 20)
 
 p1 / p2
 ```
 
+## Re-scaling the transformation
 
+```{r}
+#| echo: true
+bind_rows( favstats(~ 1/bmi, data = train_c4im),
+           favstats(~ 1000/bmi, data = train_c4im)) |>
+  mutate(outcome = c("1/bmi", "1000/bmi")) |> 
+  relocate(outcome) |>
+  gt() |> fmt_number(columns = min:sd, decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
 
-## `bmi` means by `exerany` and `health`
+## Shape doesn't change
+
+```{r}
+p2 <- ggplot(train_c4im, aes(x = 1/bmi)) + 
+  geom_histogram(col = "navy", fill = "green", bins = 20) +
+  labs(title = "1/BMI")
+
+p3 <- ggplot(train_c4im, aes(x = 1000/bmi)) +
+  geom_histogram(col = "navy", fill = "green", bins = 20) + 
+  labs(title = "1000/BMI")
+
+p2 / p3
+```
+
+## Means by `exerany` and `health`
 
 ```{r}
 #| echo: true
 summaries_1 <- train_c4im |>
     group_by(exerany, health) |>
-    summarise(n = n(), mean = mean(bmi), stdev = sd(bmi))
+    summarise(n = n(), mean = mean(1000/bmi), stdev = sd(1000/bmi))
 summaries_1 
 ```
 
@@ -138,7 +168,7 @@ ggplot(summaries_1, aes(x = health, y = mean,
   geom_point(size = 2) +
   geom_line(aes(group = factor(exerany))) +
   scale_color_viridis_d(option = "C", end = 0.5) +
-  labs(title = "Observed Means of BMI",
+  labs(title = "Observed Means of 1000/BMI",
        subtitle = "by Exercise and Overall Health")
 ```
 
@@ -158,293 +188,334 @@ ggplot(summaries_1, aes(x = health, y = mean,
        subtitle = "by Exercise and Overall Health")
 ```
 
-# Fitting a Two-Way ANOVA model for BMI
+# Fitting a Two-Way ANOVA model for 1000/BMI
 
-## Model `m_1` without interaction
+## Model `m1` without interaction
 
 ```{r}
 #| echo: true
-m_1 <- lm(bmi ~ exerany + health, data = train_c4im)
+m1 <- lm(1000/bmi ~ exerany + health, data = train_c4im)
 ```
 
 - How well does this model fit the training data?
 
 ```{r}
 #| echo: true
-glance(m_1) |> 
+glance(m1) |> 
     select(r.squared, adj.r.squared, sigma, nobs, 
            df, df.residual, AIC, BIC) |> 
-  gt() |> tab_options(table.font.size = 20)
+  gt() |> fmt_number(columns = r.squared:sigma, decimals = 3) |>
+  fmt_number(columns = AIC:BIC, decimals = 1) |>
+  tab_options(table.font.size = 20)
 ```
 
-## Tidied ANOVA for `m_1`
+## Tidied ANOVA for `m1`
 
 ```{r}
 #| echo: true
-tidy(anova(m_1)) |> gt() |> tab_options(table.font.size = 20)
+tidy(anova(m1)) |> gt() |> 
+  fmt_number(columns = sumsq:statistic, decimals = 2) |>
+  fmt_number(columns = p.value, decimals = 4) |>
+  tab_options(table.font.size = 20)
 ```
 
-## Tidied summary of `m_1` coefficients
+## Tidied summary of `m1` coefficients
 
 ```{r}
 #| echo: true
-tidy(m_1, conf.int = TRUE, conf.level = 0.90) |> 
-  gt() |> tab_options(table.font.size = 20)
+tidy(m1, conf.int = TRUE, conf.level = 0.90) |> 
+  gt() |> fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
-## Interpreting `m_1`
+## Interpreting `m1`
 
-Name | `exerany` | `health` | predicted `bmi`
+Name | `exerany` | `health` | predicted `1000/bmi`
 -------- | :------: | :------: | ---------:
-Harry | 0 | Excellent | 27.91
-Sally   | 1 | Excellent | 27.91 - 2.20 = 25.71
-Billy | 0 | Fair | 27.91 + 3.71 = 31.62
-Meg | 1 | Fair | 27.91 - 2.20 + 3.71 = 29.42
+Harry | 0 | Excellent | 37.59
+Sally   | 1 | Excellent | 37.59 + 2.15 = 39.74
+Billy | 0 | Fair | 37.59 - 3.60 = 33.99
+Meg | 1 | Fair | 37.59 + 2.15 - 3.60 = 36.14
 
 - Effect of `exerany`?
 - Effect of `health` = Fair instead of Excellent?
 
-## `m_1` Residual Plots
+## `m1` Residual Plots (*n* = 670)
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_1, which = c(1,2))
+par(mfrow = c(1,2)); plot(m1, which = c(1,2))
 ```
 
-## `m_1` Residual Plots
+## `m1` Residual Plots (*n* = 670)
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_1, which = c(3,5))
+par(mfrow = c(1,2)); plot(m1, which = c(3,5))
 ```
 
-# Fitting ANOVA model `m_1int` including interaction
+# Fitting ANOVA model `m1int` including interaction
 
-## Adding the interaction term to `m_1`
+## Adding the interaction term to `m1`
 
 ```{r}
 #| echo: true
-m_1int <- lm(bmi ~ exerany * health, data = train_c4im)
+m1int <- lm(1000/bmi ~ exerany * health, data = train_c4im)
 ```
 
 - How do our models compare on fit to the training data?
 
 ```{r}
 #| echo: true
-bind_rows(glance(m_1), glance(m_1int)) |> 
-    mutate(mod = c("m_1", "m_1int")) |>
-    select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-       sigma, nobs, df, df.res = df.residual, AIC, BIC) |> 
-  gt() |> tab_options(table.font.size = 20)
+bind_rows(glance(m1), glance(m1int)) |>
+  mutate(mod = c("m1", "m1int")) |>
+  select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
+         sigma, nobs, df, df.res = df.residual, AIC, BIC) |> 
+  gt() |> fmt_number(columns = r.sq:sigma, decimals = 3) |>
+  fmt_number(columns = AIC:BIC, decimals = 1) |>
+  tab_options(table.font.size = 20)
 ```
 
-## ANOVA for the `m_1int` model
+## ANOVA for the `m1int` model
 
 ```{r}
 #| echo: true
-tidy(anova(m_1int)) |> gt() |> tab_options(table.font.size = 20)
+tidy(anova(m1int)) |> gt() |> 
+  fmt_number(columns = sumsq:statistic, decimals = 2) |>
+  fmt_number(columns = p.value, decimals = 4) |>
+  tab_options(table.font.size = 20)
 ```
 
-## ANOVA test comparing `m_1` to `m_1int`
+## ANOVA test comparing `m1` to `m1int`
 
 ```{r}
 #| echo: true
-anova(m_1, m_1int)
+anova(m1, m1int)
 ```
 
-## `m_1int` coefficients
+## `m1int` coefficients
 
 ```{r}
 #| echo: true
-tidy(m_1int, conf.int = TRUE, conf.level = 0.90) |>
-  rename(se = std.error, t = statistic, p = p.value) |> 
-  gt() |> tab_options(table.font.size = 20)
+tidy(m1int, conf.int = TRUE, conf.level = 0.90) |>
+  gt() |> fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
-## Interpreting the `m_1int` model
+## Interpreting the `m1int` model
 
-Name | `exerany` | `health` | predicted `bmi`
+Name | `exerany` | `health` | predicted `1000/bmi`
 -------- | :------: | :------: | ---------:
-Harry | 0 | Excellent | 27.49
-Sally   | 1 | Excellent | 27.49 - 1.69 = 25.80
-Billy | 0 | Fair | 27.49 + 7.64 = 35.13
-Meg | 1 | Fair | 27.49 - 1.69 + 7.64 - 6.22 = 27.22
+Harry | 0 | Excellent | 36.95
+Sally   | 1 | Excellent | 36.95 + 2.92 = 39.87
+Billy | 0 | Fair | 36.95 - 6.26 = 30.69
+Meg | 1 | Fair | 36.95 + 2.92 - 6.26 + 4.63 = 38.24
 
 - How do we interpret effect sizes here? **It depends**.
 
-## Interpreting the `m_1int` model
+## Interpreting the `m1int` model
 
-- Effect of `exerany`?
-    - If `health` = Excellent, effect is -1.69
-    - If `health` = Fair, effect is (-1.69 - 6.22) = -7.91
+- Effect of `exerany` on predicted `1000/bmi`?
+    - If `health` = Excellent, effect is +2.92
+    - If `health` = Fair, effect is (2.92 + 4.63) = +7.55
 - Effect of `health` = Fair instead of Excellent?
-    - If `exerany` = 0 (no), effect is 7.64
-    - If `exerany` = 1 (yes), effect is (7.64 - 6.22) = 1.42
+    - If `exerany` = 0 (no), effect is -6.26
+    - If `exerany` = 1 (yes), effect is (-6.26 + 4.63) = -1.63
 
-## Residuals from `m_1int`?
+## Residuals from `m1int`? (*n* = 670)
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_1int, which = c(1,2))
+par(mfrow = c(1,2)); plot(m1int, which = c(1,2))
 ```
 
-## Residuals from `m_1int`?
+## Residuals from `m1int`? (*n* = 670)
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_1int, which = c(3,5))
+par(mfrow = c(1,2)); plot(m1int, which = c(3,5))
 ```
 
-# Incorporating a Covariate (as a main and linear effect) into our two-way ANOVA models
+# Incorporating a Covariate into our two-way ANOVA models
 
-## Add `fruit_day` to `m_1`
+## Add `fruit_day` to `m1`
 
 ```{r}
 #| echo: true
-m_2 <- lm(bmi ~ fruit_day + exerany + health, data = train_c4im)
+m2 <- lm(1000/bmi ~ fruit_day + exerany + health, data = train_c4im)
 ```
 
 - How well does this model fit the training data?
 
 ```{r}
 #| echo: true
-bind_rows(glance(m_1), glance(m_2)) |>
-  mutate(mod = c("m_1", "m_2")) |>
+bind_rows(glance(m1), glance(m2)) |>
+  mutate(mod = c("m1", "m2")) |>
   select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
          sigma, df, df.res = df.residual, AIC, BIC) |> 
-  gt() |> tab_options(table.font.size = 20)
+  gt() |> fmt_number(columns = r.sq:sigma, decimals = 3) |>
+  fmt_number(columns = AIC:BIC, decimals = 1) |>
+  tab_options(table.font.size = 20)
 ```
 
-## ANOVA for the `m_2` model
+## ANOVA for the `m2` model
 
 ```{r}
 #| echo: true
-tidy(anova(m_2)) |> gt() |> tab_options(table.font.size = 20)
+tidy(anova(m2)) |> gt() |> 
+  fmt_number(columns = sumsq:statistic, decimals = 2) |>
+  fmt_number(columns = p.value, decimals = 4) |>
+  tab_options(table.font.size = 20)
 ```
 
 
-## `m_2` coefficients
+## `m2` coefficients
 
 ```{r}
 #| echo: true
-tidy(m_2, conf.int = TRUE, conf.level = 0.90) |>
-  gt() |> tab_options(table.font.size = 20)
+tidy(m2, conf.int = TRUE, conf.level = 0.90) |>
+  gt() |> fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
-## `m_2` Residuals
+## `m2` Residuals
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_2, which = c(1,2))
+par(mfrow = c(1,2)); plot(m2, which = c(1,2))
 ```
 
-## `m_2` Residuals
+## `m2` Residuals
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_2, which = c(3,5))
+par(mfrow = c(1,2)); plot(m2, which = c(3,5))
 ```
-
-## Who is that poorest fit case?
-
-Plot suggests we look at row 28
-
-```{r}
-#| echo: true
-train_c4im |> slice(28) |>
-  select(ID, bmi, fruit_day, exerany, health) |> 
-  gt() |> tab_options(table.font.size = 20)
-```
-
-## What is unusual about this subject?
-
-```{r}
-#| echo: true
-train_c4im |> arrange(desc(bmi)) 
-```
-
 
 ## Include the interaction term?
 
 ```{r}
 #| echo: true
-m_2int <- lm(bmi ~ fruit_day + exerany * health, 
+m2int <- lm(1000/bmi ~ fruit_day + exerany * health, 
           data = train_c4im)
 ```
 
-### ANOVA for the `m_2int` model
+### ANOVA for the `m2int` model
 
 ```{r}
 #| echo: true
-tidy(anova(m_2int)) |> gt() |> tab_options(table.font.size = 20)
+tidy(anova(m2int)) |> gt() |> 
+  fmt_number(columns = sumsq:statistic, decimals = 2) |>
+  fmt_number(columns = p.value, decimals = 4) |>
+  tab_options(table.font.size = 20)
 ```
 
-## `m_2int` coefficients
+## `m2int` coefficients
 
 ```{r}
 #| echo: true
-tidy(m_2int, conf.int = TRUE, conf.level = 0.90) |>
-  rename(se = std.error, t = statistic, p = p.value) |> 
-  gt() |> tab_options(table.font.size = 18)
+tidy(m2int, conf.int = TRUE, conf.level = 0.90) |>
+  gt() |> fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 18)
 ```
 
-## ANOVA: Compare `m_2` & `m_2int`
+## ANOVA: Compare `m2` & `m2int`
 
 ```{r}
 #| echo: true
-anova(m_2, m_2int)
+anova(m2, m2int)
 ```
 
-## `m_2int` Residuals
+## `m2int` Residuals
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_2int, which = c(1,2))
+par(mfrow = c(1,2)); plot(m2int, which = c(1,2))
 ```
 
-## `m_2int` Residuals
+## `m2int` Residuals
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_2int, which = c(3,5))
+par(mfrow = c(1,2)); plot(m2int, which = c(3,5))
 ```
+
+# Comparing Our Models
 
 ## Which of the four models fits best?
 
 In the **training** sample, we have...
 
 ```{r}
-bind_rows(glance(m_1), glance(m_2), glance(m_1int), glance(m_2int)) |>
-  mutate(mod = c("m_1", "m_2", "m_1int", "m_2int")) |>
+bind_rows(glance(m1), glance(m2), glance(m1int), glance(m2int)) |>
+  mutate(mod = c("m1", "m2", "m1int", "m2int")) |>
   select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
          sigma, df, df.res = df.residual, AIC, BIC) |> 
-  gt() |> tab_options(table.font.size = 20)
+  gt() |> fmt_number(columns = r.sq:sigma, decimals = 3) |>
+  fmt_number(columns = AIC:BIC, decimals = 1) |>
+  tab_options(table.font.size = 20)
 ```
 
-- Adjusted $R^2$, $\sigma$, AIC and BIC all improve as we move down from `m1` towards `m2_int`. 
+- Adjusted $R^2$, $\sigma$ and AIC all improve as we move down from `m1` towards `m2_int`. BIC likes `m2`.
 - BUT the training sample cannot judge between models accurately. Our models have already *seen* that data.
 
-## Predicting `bmi` in the test sample
-
-- For fairer comparisons, consider the held-out sample.
-
-We'll use `augment` from the `broom` package...
+## What does `augment()` give us?
 
 ```{r}
 #| echo: true
-m1_test_aug <- augment(m_1, newdata = test_c4im)
-m1int_test_aug <- augment(m_1int, newdata = test_c4im)
-m2_test_aug <- augment(m_2, newdata = test_c4im)
-m2int_test_aug <- augment(m_2int, newdata = test_c4im)
+
+m1_test_aug <- augment(m1, newdata = test_c4im) |> 
+  mutate(out = 1000/bmi)
+m1_test_aug |> select(ID, bmi, out, .fitted, .resid, health, exerany) |>
+  slice(198:202) |> gt() |> 
+  fmt_number(columns = bmi:.resid, decimals = 2) |>
+  tab_options(table.font.size = 20)
 ```
 
-This adds fitted values (predictions) and residuals (errors) ...
+Here, `.fitted` = predicted `out` and `.resid` = `out` - `.fitted`.
+
+## What to do?
+
+Our models predict `1000/bmi`, but we want to assess predictions of `bmi`. How do we convert predicted `1000/bmi` to predicted `bmi`?
+
+Note that 1000/(1000/`bmi`) = `bmi`, so we need
+
+- 1000/`.fitted` for our predicted `bmi`, and
+- observed `bmi` - predicted `bmi` for our residuals
+
+## Adjusting `augment()` appropriately
 
 ```{r}
 #| echo: true
-m1_test_aug |> select(ID, bmi, .fitted, .resid) |> 
-    slice(1:2) |> gt() |> tab_options(table.font.size = 20)
+m1_test_aug <- augment(m1, newdata = test_c4im) |> 
+  mutate(bmi_fit = 1000/.fitted, bmi_res = bmi - bmi_fit)
+m1_test_aug |> 
+  select(ID, bmi, bmi_fit, bmi_res, health, exerany, .fitted, .resid) |>
+  slice(198:202) |> gt() |> 
+  fmt_number(columns = bmi:bmi_res, decimals = 2) |>
+  fmt_number(columns = .fitted:.resid, decimals = 2) |>
+  tab_options(table.font.size = 20)
 ```
+
+
+## Augment all four models so far...
+
+```{r}
+#| echo: true
+m1_test_aug <- augment(m1, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted, bmi_res = bmi - bmi_fit)
+
+m1int_test_aug <- augment(m1int, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted, bmi_res = bmi - bmi_fit)
+
+m2_test_aug <- augment(m2, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted, bmi_res = bmi - bmi_fit)
+
+m2int_test_aug <- augment(m2int, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted, bmi_res = bmi - bmi_fit)
+```
+
+# Using the `yardstick` package
 
 ## The `yardstick` package
 
@@ -470,19 +541,21 @@ $$
 rmse = \sqrt{\frac{1}{n} \sum{(truth - estimate)^2}}
 $$
 
-## Testing Results (using $R^2$)
+## Testing Results (Validated $R^2$)
 
 We can use the `yardstick` package and its `rsq()` function.
 
 ```{r}
 #| echo: true
 testing_r2 <- bind_rows(
-    rsq(m1_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m1int_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m2_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m2int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_1int", "m_2", "m_2int"))
-testing_r2 |> gt() |> tab_options(table.font.size = 20)
+    rsq(m1_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m1int_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m2_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m2int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(model = c("m1", "m1int", "m2", "m2int"))
+testing_r2 |> 
+  gt() |> fmt_number(.estimate, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
 
@@ -493,12 +566,14 @@ Consider the mean absolute prediction error ...
 ```{r}
 #| echo: true
 testing_mae <- bind_rows(
-    mae(m1_test_aug, truth = bmi, estimate = .fitted),
-    mae(m1int_test_aug, truth = bmi, estimate = .fitted),
-    mae(m2_test_aug, truth = bmi, estimate = .fitted),
-    mae(m2int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_1int", "m_2", "m_2int"))
-testing_mae |> gt() |> tab_options(table.font.size = 20)
+    mae(m1_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m1int_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m2_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m2int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(model = c("m1", "m1int", "m2", "m2int"))
+testing_mae |> 
+  gt() |> fmt_number(.estimate, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
 
@@ -509,12 +584,14 @@ How about the square root of the mean squared prediction error, or RMSE?
 ```{r}
 #| echo: true
 testing_rmse <- bind_rows(
-   rmse(m1_test_aug, truth = bmi, estimate = .fitted),
-   rmse(m1int_test_aug, truth = bmi, estimate = .fitted),
-   rmse(m2_test_aug, truth = bmi, estimate = .fitted),
-   rmse(m2int_test_aug, truth = bmi, estimate = .fitted)) |>
-   mutate(model = c("m_1", "m_1int", "m_2", "m_2int"))
-testing_rmse |> gt() |> tab_options(table.font.size = 20)
+   rmse(m1_test_aug, truth = bmi, estimate = bmi_fit),
+   rmse(m1int_test_aug, truth = bmi, estimate = bmi_fit),
+   rmse(m2_test_aug, truth = bmi, estimate = bmi_fit),
+   rmse(m2int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+   mutate(model = c("m1", "m1int", "m2", "m2int"))
+testing_rmse |> 
+  gt() |> fmt_number(.estimate, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
 ## Other `yardstick` summaries (1)
@@ -531,42 +608,7 @@ testing_rmse |> gt() |> tab_options(table.font.size = 20)
 
 See [the yardstick home page](https://yardstick.tidymodels.org/index.html) for more details.
 
-# Can I STOP HERE???!?!?!?!?
-
 # Incorporating Non-Linearity into our models
-
-## Incorporating a non-linear term for `fruit_day`
-
-Suppose we wanted to include a polynomial term for `fruit_day`:
-
-```
-lm(bmi ~ fruit_day, data = train_c4im)
-lm(bmi ~ poly(fruit_day, 2), data = train_c4im)
-lm(bmi ~ poly(fruit_day, 3), data = train_c4im)
-```
-
-```{r}
-#| fig-height: 4
-p1 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
-    geom_point(alpha = 0.3) + 
-    geom_smooth(formula = y ~ x, method = "lm", 
-                col = "red", se = FALSE) + 
-    labs(title = "Linear Fit")
-
-p2 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
-    geom_point(alpha = 0.3) + 
-    geom_smooth(formula = y ~ poly(x, 2), method = "lm",
-                col = "blue", se = FALSE) +
-    labs(title = "2nd order Polynomial")
-
-p3 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
-    geom_point(alpha = 0.3) + 
-    geom_smooth(formula = y ~ poly(x, 3), method = "lm",
-                col = "purple", se = FALSE) +
-    labs(title = "3rd order Polynomial")
-
-p1 + p2 + p3
-```
 
 ## Polynomial Regression
 
@@ -582,58 +624,93 @@ For example:
 
 Fitting such a model creates a **polynomial regression**.
 
-## Raw Polynomials vs. Orthogonal Polynomials
+## Adding a polynomial in `fruit_day`
 
-Predict `bmi` using `fruit_day` with a polynomial of degree 2.
+Can we predict `1000/bmi` with a polynomial in `fruit_day`?
+
+```
+lm(1000/bmi ~ fruit_day, data = train_c4im)
+lm(1000/bmi ~ poly(fruit_day, 2), data = train_c4im)
+lm(1000/bmi ~ poly(fruit_day, 3), data = train_c4im)
+```
+
+## Plotting the Polynomials
 
 ```{r}
 #| echo: true
-(temp1 <- lm(bmi ~ fruit_day + I(fruit_day^2), 
+#| output-location: slide
+p1 <- ggplot(train_c4im, aes(x = fruit_day, y = 1000/bmi)) +
+    geom_point(alpha = 0.3) + 
+    geom_smooth(formula = y ~ x, method = "lm", 
+                col = "red", se = FALSE) + 
+    labs(title = "Linear Fit")
+
+p2 <- ggplot(train_c4im, aes(x = fruit_day, y = 1000/bmi)) +
+    geom_point(alpha = 0.3) + 
+    geom_smooth(formula = y ~ poly(x, 2), method = "lm",
+                col = "blue", se = FALSE) +
+    labs(title = "2nd order Polynomial")
+
+p3 <- ggplot(train_c4im, aes(x = fruit_day, y = 1000/bmi)) +
+    geom_point(alpha = 0.3) + 
+    geom_smooth(formula = y ~ poly(x, 3), method = "lm",
+                col = "purple", se = FALSE) +
+    labs(title = "3rd order Polynomial")
+
+p1 + p2 + p3
+```
+
+
+
+## Raw vs. Orthogonal Polynomials
+
+Predict `1000/bmi` using `fruit_day` with a "raw polynomial of degree 2."
+
+```{r}
+#| echo: true
+(temp1 <- lm(1000/bmi ~ fruit_day + I(fruit_day^2), 
              data = train_c4im))
 ```
 
-This uses raw polynomials. Predicted `bmi` for `fruit_day = 2` is 
+Predicted `1000/bmi` for `fruit_day = 2` is 
 
 ```
-bmi = 29.5925 - 1.2733 (fruit_day) + 0.1051 (fruit_day^2)
-    = 29.5925 - 1.2733 (2) + 0.1051 (4) 
-    = 27.466
+1000/bmi = 35.4429 + 1.5095 (fruit_day) - 0.1201 (fruit_day^2)
+         = 35.4429 + 1.5095 (2) - 0.1201 (4)
+         = 37.9815
 ```
 
 ## Does the raw polynomial match our expectations?
 
 ```{r}
 #| echo: true
-temp1 <- lm(bmi ~ fruit_day + I(fruit_day^2), 
+temp1 <- lm(1000/bmi ~ fruit_day + I(fruit_day^2), 
              data = train_c4im)
-```
 
-```{r}
-#| echo: true
 augment(temp1, newdata = tibble(fruit_day = 2)) |> 
   gt() |> tab_options(table.font.size = 20)
 ```
 
-and this matches our "by hand" calculation. But it turns out most regression models use *orthogonal* rather than raw polynomials...
+This matches our "by hand" calculation, within rounding error.
+
+- But it turns out most regression models use *orthogonal* rather than raw polynomials...
 
 ## Fitting an Orthogonal Polynomial
 
-Predict `bmi` using `fruit_day` with an *orthogonal* polynomial of degree 2.
+Predict `1000/bmi` using `fruit_day` with an *orthogonal* polynomial of degree 2.
 
 ```{r}
 #| echo: true
-(temp2 <- lm(bmi ~ poly(fruit_day,2), data = train_c4im))
+(temp2 <- lm(1000/bmi ~ poly(fruit_day,2), data = train_c4im))
 ```
 
-This looks very different from our previous version of the model.
-
-- What happens when we make a prediction, though?
+This looks very different from our previous version of the model. What happens when we make a prediction, though?
 
 ## Prediction in the Orthogonal Polynomial Model
 
-Remember that in our raw polynomial model, our "by hand" and "using R" calculations both concluded that the predicted `bmi` for a subject with `fruit_day` = 2 was 27.466.
+Remember that in our raw polynomial model, our "by hand" and "using R" calculations each predicted `1000/bmi` for a subject with `fruit_day` = 2 to be 37.981.
 
-Now, what happens with the orthogonal polynomial model `temp2` we just fit?
+What happens with the orthogonal polynomial model `temp2`?
 
 ```{r}
 #| echo: true
@@ -646,19 +723,19 @@ augment(temp2, newdata = data.frame(fruit_day = 2)) |>
 ## Fits of raw vs orthogonal polynomials
 
 ```{r}
+#| echo: true
+#| output-location: slide
 temp1_aug <- augment(temp1, train_c4im)
 temp2_aug <- augment(temp2, train_c4im)
 
-p1 <- ggplot(temp1_aug, aes(x = fruit_day, y = bmi)) +
+p1 <- ggplot(temp1_aug, aes(x = fruit_day, y = 1000/bmi)) +
     geom_point(alpha = 0.3) +
-    geom_line(aes(x = fruit_day, y = .fitted), 
-              col = "red") +
+    geom_line(aes(x = fruit_day, y = .fitted), col = "red", size = 2) +
     labs(title = "temp1: Raw fit, degree 2")
 
-p2 <- ggplot(temp2_aug, aes(x = fruit_day, y = bmi)) +
+p2 <- ggplot(temp2_aug, aes(x = fruit_day, y = 1000/bmi)) +
     geom_point(alpha = 0.3) +
-    geom_line(aes(x = fruit_day, y = .fitted), 
-              col = "blue") +
+    geom_line(aes(x = fruit_day, y = .fitted), col = "blue", size = 2) +
     labs(title = "temp2: Orthogonal fit, degree 2")
 
 p1 + p2 + 
@@ -667,447 +744,183 @@ p1 + p2 +
 
 - The two models are, in fact, identical.
 
-## Why do we use orthogonal polynomials?
+## Why use orthogonal polynomials?
 
 - The main reason is to avoid having to include powers of our predictor that are highly collinear. 
 - Variance Inflation Factor assesses collinearity...
 
 ```{r}
 #| echo: true
-vif(temp1)        ## from rms package
+rms::vif(temp1)        ## from rms package
 ```
 
-- Orthogonal polynomial terms are uncorrelated with one another, easing the process of identifying which terms add value to our model.
+- Orthogonal polynomial terms are uncorrelated...
 
 ```{r}
 #| echo: true
-vif(temp2)      
+rms::vif(temp2)      
 ```
 
 
-## Why orthogonal rather than raw polynomials?
+## Why orthogonal polynomials?
 
 The tradeoff is that the raw polynomial is a lot easier to explain in terms of a single equation in the simplest case. 
 
 Actually, we'll usually avoid polynomials in our practical work, and instead use splines, which are more flexible and require less maintenance, but at the cost of pretty much requiring you to focus on visualizing their predictions rather than their equations. 
 
-## Adding a Second Order Polynomial to our Models
+## Adding a Second Order Polynomial
 
 ```{r}
 #| echo: true
-m_3 <- lm(bmi ~ poly(fruit_day,2) + exerany + health,
+m3 <- lm(1000/bmi ~ poly(fruit_day,2) + exerany + health,
           data = train_c4im)
 ```
 
 - Comparison to other models without the interaction...
 
 ```{r}
-bind_rows(glance(m_1), glance(m_2), glance(m_3)) |>
-  mutate(mod = c("m_1", "m_2", "m_3")) |>
-  select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-         sigma, df, df.res = df.residual, AIC, BIC) |> 
-  gt() |> tab_options(table.font.size = 20)
+bind_rows(glance(m1), glance(m2), glance(m3)) |>
+  mutate(mod = c("m1", "m2", "m3")) |>
+  select(mod, r.squared, adj.r.squared, sigma, 
+         df, df.residual, nobs, AIC, BIC) |> 
+  gt() |> fmt_number(columns = r.squared:adj.r.squared, decimals = 4) |>
+  fmt_number(columns = sigma, decimals = 3) |>
+  fmt_number(columns = AIC:BIC, decimals = 1) |>
+  tab_options(table.font.size = 20)
 ```
 
 
-## Tidied summary of `m_3` coefficients
+## `m3` coefficients
 
 ```{r}
-tidy(m_3, conf.int = TRUE, conf.level = 0.90) |>
-  rename(est = estimate, se = std.error, t = statistic, 
-         p = p.value) |> 
-  gt() |> tab_options(table.font.size = 20)
+tidy(m3, conf.int = TRUE, conf.level = 0.90) |>
+  gt() |> fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
-## `m_3` Residuals
-
-```{r}
-#| echo: true
-par(mfrow = c(1,2)); plot(m_3, which = c(1,2))
-```
-
-## `m_3` Residuals
+## `m3` Residuals
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_3, which = c(3,5))
+par(mfrow = c(1,2)); plot(m3, which = c(1,2))
+```
+
+## `m3` Residuals
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m3, which = c(3,5))
 ```
 
 ## Add in the interaction
 
 ```{r}
 #| echo: true
-m_3int <- lm(bmi ~ poly(fruit_day,2) + exerany * health,
+m3int <- lm(1000/bmi ~ poly(fruit_day,2) + exerany * health,
           data = train_c4im)
 ```
 
 - Comparison to other models with the interaction...
 
 ```{r}
-bind_rows(glance(m_1int), glance(m_2int), glance(m_3int)) |>
-  mutate(mod = c("m_1int", "m_2int", "m_3int")) |>
-  select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-         sigma, df, df.res = df.residual, AIC, BIC) |> 
-  gt() |> tab_options(table.font.size = 20)
-
+bind_rows(glance(m1int), glance(m2int), glance(m3int)) |>
+  mutate(mod = c("m1int", "m2int", "m3int")) |>
+  select(mod, r.squared, adj.r.squared, sigma, 
+         df, df.residual, nobs, AIC, BIC) |> 
+  gt() |> fmt_number(columns = r.squared:adj.r.squared, decimals = 4) |>
+  fmt_number(columns = sigma, decimals = 3) |>
+  fmt_number(columns = AIC:BIC, decimals = 1) |>
+  tab_options(table.font.size = 20)
 ```
 
 
-## Tidied summary of `m_3int` coefficients
+## `m3int` coefficients
 
 ```{r}
-tidy(m_3int, conf.int = TRUE, conf.level = 0.90) |>
-    rename(est = estimate, se = std.error, t = statistic, 
-           p = p.value) |> gt() |> tab_options(table.font.size = 20)
-
+tidy(m3int, conf.int = TRUE, conf.level = 0.90) |>
+  gt() |> fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
 ```
 
-## `m_3int` Residuals
-
-```{r}
-#| echo: true
-par(mfrow = c(1,2)); plot(m_3int, which = c(1,2))
-```
-
-## `m_3int` Residuals
+## `m3int` Residuals
 
 ```{r}
 #| echo: true
-par(mfrow = c(1,2)); plot(m_3int, which = c(3,5))
+par(mfrow = c(1,2)); plot(m3int, which = c(1,2))
 ```
 
-
-## How do models `m_3` and `m_3int` do in testing?
+## `m3int` Residuals
 
 ```{r}
 #| echo: true
-m3_test_aug <- augment(m_3, newdata = test_c4im)
-m3int_test_aug <- augment(m_3int, newdata = test_c4im)
+par(mfrow = c(1,2)); plot(m3int, which = c(3,5))
+```
+
+
+## Testing Sample for `m3` and `m3int`?
+
+```{r}
+#| echo: true
+m3_test_aug <- augment(m3, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted, bmi_res = bmi - bmi_fit)
+m3int_test_aug <- augment(m3int, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted, bmi_res = bmi - bmi_fit)
 
 testing_r2 <- bind_rows(
-    rsq(m1_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m2_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m3_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m1int_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m2int_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m3int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_2", "m_3", "m_1int",
-                     "m_2int", "m_3int"))
+    rsq(m1_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m2_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m3_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m1int_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m2int_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m3int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(mod = c("m1", "m2", "m3", "m1int", "m2int", "m3int"))
 ```
 
 - I've hidden my calculations for RMSE and MAE here.
 
 ```{r}
 testing_rmse <- bind_rows(
-    rmse(m1_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m2_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m3_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m1int_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m2int_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m3int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_2", "m_3", "m_1int",
-                     "m_2int", "m_3int"))
+    rmse(m1_test_aug, truth = bmi, estimate = bmi_fit),
+    rmse(m2_test_aug, truth = bmi, estimate = bmi_fit),
+    rmse(m3_test_aug, truth = bmi, estimate = bmi_fit),
+    rmse(m1int_test_aug, truth = bmi, estimate = bmi_fit),
+    rmse(m2int_test_aug, truth = bmi, estimate = bmi_fit),
+    rmse(m3int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(mod = c("m1", "m2", "m3", "m1int",
+                     "m2int", "m3int"))
 
 testing_mae <- bind_rows(
-    mae(m1_test_aug, truth = bmi, estimate = .fitted),
-    mae(m2_test_aug, truth = bmi, estimate = .fitted),
-    mae(m3_test_aug, truth = bmi, estimate = .fitted),
-    mae(m1int_test_aug, truth = bmi, estimate = .fitted),
-    mae(m2int_test_aug, truth = bmi, estimate = .fitted),
-    mae(m3int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_2", "m_3", "m_1int",
-                     "m_2int", "m_3int"))
+    mae(m1_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m2_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m3_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m1int_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m2int_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m3int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(mod = c("m1", "m2", "m3", "m1int",
+                     "m2int", "m3int"))
 ```
 
-## Results comparing all six models (testing)
+## Test Results for all six models
 
 ```{r}
 #| echo: true
-bind_cols(testing_r2 |> select(model, rsquare = .estimate), 
+bind_cols(testing_r2 |> select(mod, rsquare = .estimate), 
           testing_rmse |> select(rmse = .estimate),
           testing_mae |> select(mae = .estimate)) |> 
-  gt() |> tab_options(table.font.size = 20)
+  mutate(elements = c("exerany + health", "add fruit", "add polynomial", "m1 + interaction", "m2 + interaction", "m3 + interaction")) |>
+  gt() |> fmt_number(columns = rsquare:mae, decimals = 4) |>
+  tab_options(table.font.size = 20)
 ```
 
-- Did the polynomial term in `m_3` and `m_3int` improve our predictions?
-
-## Splines
-
-- A **linear spline** is a continuous function formed by connecting points (called **knots** of the spline) by line segments.
-- A **restricted cubic spline** is a way to build highly complicated curves into a regression equation in a fairly easily structured way.
-- A restricted cubic spline is a series of polynomial functions joined together at the knots. 
-    + Such a spline gives us a way to flexibly account for non-linearity without over-fitting the model.
-    + Restricted cubic splines can fit many different types of non-linearities.
-    + Specifying the number of knots is all you need to do in R to get a reasonable result from a restricted cubic spline. 
-
-The most common choices are 3, 4, or 5 knots. 
-
-- 3 Knots, 2 degrees of freedom, allows the curve to "bend" once.
-- 4 Knots, 3 degrees of freedom, lets the curve "bend" twice.
-- 5 Knots, 4 degrees of freedom, lets the curve "bend" three times. 
-
-## A simulated data set
-
-```{r}
-#| echo: true
-set.seed(4322021)
-
-sim_data <- tibble(
-    x = runif(250, min = 10, max = 50),
-    y = 3*(x-30) - 0.3*(x-30)^2 + 0.05*(x-30)^3 + 
-        rnorm(250, mean = 500, sd = 70)
-)
-
-head(sim_data, 2)
-```
-
-## The `sim_data`, plotted.
-
-```{r}
-p1 <- ggplot(sim_data, aes(x = x, y = y)) + 
-    geom_point(alpha = 0.3) +
-    geom_smooth(method = "lm", col = "red", se = FALSE) +
-    labs(title = "With Linear Fit")
-
-p2 <- ggplot(sim_data, aes(x = x, y = y)) + 
-    geom_point(alpha = 0.3) +
-    geom_smooth(method = "loess", col = "blue", se = FALSE) +
-    labs(title = "With Loess Smooth")
-
-p1 + p2
-```
-
-
-## Fitting Restricted Cubic Splines with `lm` and `rcs`
-
-```{r}
-#| echo: true
-sim_linear <- lm(y ~ x, data = sim_data)
-sim_poly2  <- lm(y ~ poly(x, 2), data = sim_data)
-sim_poly3  <- lm(y ~ poly(x, 3), data = sim_data)
-sim_rcs3   <- lm(y ~ rcs(x, 3), data = sim_data)
-sim_rcs4   <- lm(y ~ rcs(x, 4), data = sim_data)
-sim_rcs5   <- lm(y ~ rcs(x, 5), data = sim_data)
-```
-
-```{r}
-#| message: false
-sim_linear_aug <- augment(sim_linear, sim_data)
-sim_poly2_aug <- augment(sim_poly2, sim_data)
-sim_poly3_aug <- augment(sim_poly3, sim_data)
-sim_rcs3_aug <- augment(sim_rcs3, sim_data)
-sim_rcs4_aug <- augment(sim_rcs4, sim_data)
-sim_rcs5_aug <- augment(sim_rcs5, sim_data)
-```
-
-## Looking at the Polynomial Fits
-
-```{r}
-p1 <- ggplot(sim_data, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_smooth(method = "lm", col = "black", se = F) +
-    labs(title = "Linear Fit") 
-
-p2 <- ggplot(sim_data, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_smooth(method = "loess", col = "forestgreen", se = F) +
-    labs(title = "Loess Smooth") 
-
-p3 <- ggplot(sim_poly2_aug, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_line(aes(x = x, y = .fitted), 
-              col = "blue", size = 1.25) +
-    labs(title = "Quadratic Polynomial") 
-
-p4 <- ggplot(sim_poly3_aug, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_line(aes(x = x, y = .fitted), 
-              col = "purple", size = 1.25) +
-    labs(title = "Cubic Polynomial") 
-
-(p1 + p2) / (p3 + p4)
-```
-
-## Looking at the Restricted Cubic Spline Fits
-
-```{r}
-p0 <- ggplot(sim_data, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_smooth(method = "lm", col = "black", se = F) +
-    labs(title = "Linear Fit") 
-
-p3 <- ggplot(sim_rcs3_aug, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_line(aes(x = x, y = .fitted), 
-              col = "blue", size = 1.25) +
-    labs(title = "RCS with 3 knots") 
-
-p4 <- ggplot(sim_rcs4_aug, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_line(aes(x = x, y = .fitted), 
-              col = "red", size = 1.25) +
-    labs(title = "RCS with 4 knots") 
-
-p5 <- ggplot(sim_rcs5_aug, aes(x = x, y = y)) +
-    geom_point(alpha = 0.5) +
-    geom_line(aes(x = x, y = .fitted), 
-              col = "purple", size = 1.25) +
-    labs(title = "RCS with 5 knots") 
-
-(p0 + p3) / (p4 + p5)
-```
-
-
-## Fitting Restricted Cubic Splines with `lm` and `rcs`
-
-For most applications, three to five knots strike a nice balance between complicating the model needlessly and fitting data pleasingly. Let's consider a restricted cubic spline model for `bmi` based on `fruit_day` again, but now with:
-
-- in `temp3`, 3 knots, and
-- in `temp4`, 4 knots,
-
-```{r}
-#| echo: true
-temp3 <- lm(bmi ~ rcs(fruit_day, 3), data = train_c4im)
-temp4 <- lm(bmi ~ rcs(fruit_day, 4), data = train_c4im)
-```
-
-
-## Spline models for `bmi` and `fruit_day`
-
-```{r}
-temp3_aug <- augment(temp3, train_c4im)
-temp4_aug <- augment(temp4, train_c4im)
-
-p1 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
-    geom_point(alpha = 0.5) +
-    geom_smooth(method = "lm", col = "black", se = F) +
-    labs(title = "Linear Fit") 
-
-p2 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
-    geom_point(alpha = 0.5) +
-    geom_smooth(method = "loess", col = "purple", se = F) +
-    labs(title = "Loess Smooth") 
-
-p3 <- ggplot(temp3_aug, aes(x = fruit_day, y = bmi)) +
-    geom_point(alpha = 0.5) +
-    geom_line(aes(x = fruit_day, y = .fitted), 
-              col = "blue", size = 1.25) +
-    labs(title = "RCS, 3 knots") 
-
-p4 <- ggplot(temp4_aug, aes(x = fruit_day, y = bmi)) +
-    geom_point(alpha = 0.5) +
-    geom_line(aes(x = fruit_day, y = .fitted), 
-              col = "red", size = 1.25) +
-    labs(title = "RCS, 4 knots") 
-
-(p1 + p2) / (p3 + p4)
-```
-
-## Let's try an RCS with 4 knots
-
-```{r}
-#| echo: true
-m_4 <- lm(bmi ~ rcs(fruit_day, 4) + exerany + health,
-          data = train_c4im)
-
-m_4int <- lm(bmi ~ rcs(fruit_day, 4) + exerany * health,
-          data = train_c4im)
-```
-
-Comparing 4 models including the `exerany*health` interaction... 
-
-```{r}
-bind_rows(glance(m_1int), glance(m_2int), 
-          glance(m_3int), glance(m_4int)) |>
-  mutate(mod = c("m_1int", "m_2int", "m_3int", "m_4int")) |>
-  mutate(fruit = c("not in", "linear", "poly(2)", "rcs(4)")) |>
-  select(mod, fruit, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-         sigma, df, AIC, BIC) |> 
-  gt() |> tab_options(table.font.size = 20)
-```
-
-
-## Tidied summary of `m_4int` coefficients
-
-```{r}
-tidy(m_4int, conf.int = TRUE, conf.level = 0.90) |>
-  rename(est = estimate, se = std.error, t = statistic, 
-         p = p.value, lo90 = conf.low, hi90 = conf.high) |> 
-  gt() |> tab_options(table.font.size = 20)
-```
-
-## `m_4int` Residual Plots
-
-```{r}
-#| echo: true
-par(mfrow = c(1,2)); plot(m_4int, which = c(1,2))
-```
-
-## `m_4int` Residual Plots
-
-```{r}
-#| echo: true
-par(mfrow = c(1,2)); plot(m_4int, which = c(3,5))
-```
-
-## How do models `m_4` and `m_4int` do in testing?
-
-```{r, echo = FALSE}
-m4_test_aug <- augment(m_4, newdata = test_c4im)
-m4int_test_aug <- augment(m_4int, newdata = test_c4im)
-
-testing_r2 <- bind_rows(
-    rsq(m1_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m2_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m3_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m4_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m1int_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m2int_test_aug, truth = bmi, estimate = .fitted),
-    rsq(m3int_test_aug, truth = bmi, estimate = .fitted), 
-    rsq(m4int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_2", "m_3", "m_4", 
-                     "m_1int", "m_2int", "m_3int", "m_4int"))
-
-testing_rmse <- bind_rows(
-    rmse(m1_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m2_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m3_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m4_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m1int_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m2int_test_aug, truth = bmi, estimate = .fitted),
-    rmse(m3int_test_aug, truth = bmi, estimate = .fitted), 
-    rmse(m4int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_2", "m_3", "m_4", 
-                     "m_1int", "m_2int", "m_3int", "m_4int"))
-
-testing_mae <- bind_rows(
-    mae(m1_test_aug, truth = bmi, estimate = .fitted),
-    mae(m2_test_aug, truth = bmi, estimate = .fitted),
-    mae(m3_test_aug, truth = bmi, estimate = .fitted),
-    mae(m4_test_aug, truth = bmi, estimate = .fitted),
-    mae(m1int_test_aug, truth = bmi, estimate = .fitted),
-    mae(m2int_test_aug, truth = bmi, estimate = .fitted),
-    mae(m3int_test_aug, truth = bmi, estimate = .fitted), 
-    mae(m4int_test_aug, truth = bmi, estimate = .fitted)) |>
-    mutate(model = c("m_1", "m_2", "m_3", "m_4", 
-                     "m_1int", "m_2int", "m_3int", "m_4int"))
-
-bind_cols(testing_r2 |> select(model, rsquare = .estimate), 
-          testing_rmse |> select(rmse = .estimate),
-          testing_mae |> select(mae = .estimate)) |> 
-  gt() |> tab_options(table.font.size = 20)
-```
-
-I'll note that there's a fair amount of very repetitive code in the Quarto file to create that table. 
-
-- What are our conclusions?
+- Did the polynomial in `m3` and `m3int` improve predictions?
 
 ## Next Week
 
+- Fitting splines, as well as polynomial terms.
 - Using the `ols` function from the **rms** package to fit linear regression models with non-linear terms.
 - Be sure to submit [Lab 2](https://thomaselove.github.io/432-2024/lab2.html) to Canvas by Tuesday 2024-01-30 at Noon.
 
-# Appendix: How The `class4` and `class4im` data were built from the `smart_ohio.csv` data created in the Course Notes
+# Appendix
 
 ## Creating Today's Data Set
 
@@ -1118,7 +931,7 @@ url1 <- "https://raw.githubusercontent.com/THOMASELOVE/432-data/master/data/smar
 
 smart_ohio <- read_csv(url1)
 
-class4 <- smart_ohio |>
+c4 <- smart_ohio |>
     filter(hx_diabetes == 0, 
            mmsa == "Cleveland-Elyria",
            complete.cases(bmi)) |>
@@ -1130,7 +943,7 @@ class4 <- smart_ohio |>
     relocate(ID)
 ```
 
-## Codebook for useful `class4` variables
+## Codebook for useful `c4` variables (1)
 
 - 894 subjects in Cleveland-Elyria with `bmi` and no history of diabetes
 
@@ -1141,12 +954,19 @@ Variable | Description
 `fruit_day` | average fruit servings consumed per day
 `drinks_wk` | average alcoholic drinks consumed per week
 `female` | sex: 1 = female, 0 = male
+
+## Codebook for useful `c4` variables (2)
+
+- 894 subjects in Cleveland-Elyria with `bmi` and no history of diabetes
+
+Variable | Description
+:----: | --------------------------------------
 `exerany` | any exercise in the past month: 1 = yes, 0 = no
 `genhealth` | self-reported overall health (5 levels)
 `race_eth` | race and Hispanic/Latinx ethnicity (5 levels)
 
-- plus `ID`, `SEQNO`, `hx_diabetes` (all 0), `MMSA` (all Cleveland-Elyria)
-- See Course Notes Chapter on BRFSS SMART data for variable details
+- plus `ID`, `SEQNO`, `hx_diabetes` (all 0), `MMSA`
+- See Course Notes Chapter on BRFSS SMART data
 
 ## Basic Data Summaries
 
@@ -1162,13 +982,13 @@ all of which can work nicely in an HTML presentation, but none of them fit well 
 
 ```{r}
 #| warning: false
-p1 <- ggplot(class4, aes(x = bmi)) + 
+p1 <- ggplot(c4, aes(x = bmi)) + 
     geom_histogram(fill = "navy", col = "white", bins = 20)
-p2 <- ggplot(class4, aes(x = inc_imp)) + 
+p2 <- ggplot(c4, aes(x = inc_imp)) + 
     geom_histogram(fill = "forestgreen", col = "white", bins = 20)
-p3 <- ggplot(class4, aes(x = fruit_day)) + 
+p3 <- ggplot(c4, aes(x = fruit_day)) + 
     geom_histogram(fill = "tomato", col = "white", bins = 20)
-p4 <- ggplot(class4, aes(x = drinks_wk)) + 
+p4 <- ggplot(c4, aes(x = drinks_wk)) + 
     geom_histogram(fill = "royalblue", col = "white", bins = 20)
 
 (p1 + p2) / (p3 + p4)
@@ -1180,14 +1000,14 @@ p4 <- ggplot(class4, aes(x = drinks_wk)) +
 #| echo: true
 #| eval: false
 
-p1 <- ggplot(class4, aes(x = bmi)) + 
+p1 <- ggplot(c4, aes(x = bmi)) + 
     geom_histogram(fill = "navy", col = "white", bins = 20)
-p2 <- ggplot(class4, aes(x = inc_imp)) + 
+p2 <- ggplot(c4, aes(x = inc_imp)) + 
     geom_histogram(fill = "forestgreen", col = "white", 
                    bins = 20)
-p3 <- ggplot(class4, aes(x = fruit_day)) + 
+p3 <- ggplot(c4, aes(x = fruit_day)) + 
     geom_histogram(fill = "tomato", col = "white", bins = 20)
-p4 <- ggplot(class4, aes(x = drinks_wk)) + 
+p4 <- ggplot(c4, aes(x = drinks_wk)) + 
     geom_histogram(fill = "royalblue", col = "white", 
                    bins = 20)
 (p1 + p2) / (p3 + p4)
@@ -1199,35 +1019,33 @@ I also used `#| warning: false` in the plot's code chunk label to avoid warnings
 Warning: Removed 120 rows containing non-finite values
 ```
 
-## Binary variables in raw `class4`
+## Binary variables in raw `c4`
 
 ```{r}
 #| echo: true
-class4 |> tabyl(female, exerany) |> adorn_title()
+c4 |> tabyl(female, exerany) |> adorn_title()
 ```
 
 - `female` is based on biological sex (1 = female, 0 = male)
 - `exerany` comes from a response to "During the past month, other than your regular job, did you participate in any physical activities or exercises such as running, calisthenics, golf, gardening, or walking for exercise?" (1 = yes, 0 = no, don't know and refused = missing)
+- Any signs of trouble here?
 
->- Any signs of trouble here?
->- I think the 1/0 values and names are OK choices.
-
-## Multicategorical `genhealth` in raw `class4`
+## Multicategorical `genhealth` in raw `c4`
 
 ```{r}
 #| echo: true
-class4 |> tabyl(genhealth)
+c4 |> tabyl(genhealth)
 ```
 
 - The variable is based on "Would you say that in general your health is ..." using the five specified categories (Excellent -> Poor), numbered for convenience after data collection.
-- Don't know / not sure / refused were each treated as missing.
+- Don't know / not sure / refused treated as missing.
 - How might we manage this variable?
 
 ## Changing the levels for `genhealth`
 
 ```{r}
 #| echo: true
-class4 <- class4 |>
+c4 <- c4 |>
     mutate(health = 
                fct_recode(genhealth,
                           E = "1_Excellent",
@@ -1239,20 +1057,20 @@ class4 <- class4 |>
 
 Might want to run a sanity check here, just to be sure...
 
-## Checking `health` vs. `genhealth` in `class4`
+## Checking `health` vs. `genhealth` in `c4`
 
 ```{r}
 #| echo: true
-class4 |> tabyl(genhealth, health) |> adorn_title()
+c4 |> tabyl(genhealth, health) |> adorn_title()
 ```
 
 - OK. We've preserved the order and we have much shorter labels. Sometimes, that's helpful.
 
-## Multicategorical `race_eth` in raw `class4`
+## Multicategorical `race_eth` in raw `c4`
 
 ```{r}
 #| echo: true
-class4 |> count(race_eth)
+c4 |> count(race_eth)
 ```
 
 "Don't know", "Not sure", and "Refused" were treated as missing.
@@ -1266,7 +1084,9 @@ Collapsing `race_eth` levels *might* be rational for *some* questions.
 
 - We have lots of data from two categories, but only two.
 - Systemic racism affects people of color in different ways across these categories, but also *within* them.
-- Is combining race and Hispanic/Latinx ethnicity helpful?
+
+
+## Is combining race and Hispanic/Latinx ethnicity helpful?
 
 It's hard to see the justice in collecting this information and not using it in as granular a form as possible, though this leaves some small sample sizes. There is no magic number for "too small a sample size."
 
@@ -1280,13 +1100,10 @@ Let's sort all five levels, from most observations to least...
 
 ```{r}
 #| echo: true
-class4 <- class4 |>
+c4 <- c4 |>
     mutate(race_eth = fct_infreq(race_eth))
-```
 
-```{r}
-#| echo: true
-class4 |> tabyl(race_eth)
+c4 |> tabyl(race_eth)
 ```
 
 - Not a perfect solution, certainly, but we'll try it out.
@@ -1295,11 +1112,11 @@ class4 |> tabyl(race_eth)
 
 ```{r}
 #| echo: true
-class4 <- class4 |>
+c4 <- c4 |>
     select(ID, bmi, inc_imp, fruit_day, drinks_wk, 
            female, exerany, health, race_eth, everything())
 
-miss_var_summary(class4)
+miss_var_summary(c4)
 ```
 
 ## Single Imputation Approach?
@@ -1307,7 +1124,7 @@ miss_var_summary(class4)
 ```{r}
 #| echo: true
 set.seed(43203)
-class4im <- class4 |>
+c4im <- c4 |>
     select(ID, bmi, inc_imp, fruit_day, drinks_wk, 
            female, exerany, health, race_eth) |>
     data.frame() |>
@@ -1318,7 +1135,7 @@ class4im <- class4 |>
     impute_cart(race_eth ~ health + inc_imp + bmi) |>
     tibble()
 
-prop_miss_case(class4im)
+prop_miss_case(c4im)
 ```
 
 ## Saving the tidied data
@@ -1327,9 +1144,9 @@ Let's save both the unimputed and the imputed tidy data as R data sets.
 
 ```{r}
 #| echo: true
-write_rds(class4, "c04/data/class4.Rds")
+write_rds(c4, "c04/data/c4.Rds")
 
-write_rds(class4im, "c04/data/class4im.Rds")
+write_rds(c4im, "c04/data/c4im.Rds")
 ```
 
 To reload these files, we'll use `read_rds()`. 

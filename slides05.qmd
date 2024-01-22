@@ -15,6 +15,282 @@ format:
     footer: "432 Class 05 | 2024-01-30 | <https://thomaselove.github.io/432-2024/>"
 ---
 
+# From Old Class 4
+
+# Next Time?
+
+## Splines
+
+- A **linear spline** is a continuous function formed by connecting points (called **knots** of the spline) by line segments.
+- A **restricted cubic spline** is a way to build highly complicated curves into a regression equation in a fairly easily structured way.
+- A restricted cubic spline is a series of polynomial functions joined together at the knots. 
+    + Such a spline gives us a way to flexibly account for non-linearity without over-fitting the model.
+    + Restricted cubic splines can fit many different types of non-linearities.
+    + Specifying the number of knots is all you need to do in R to get a reasonable result from a restricted cubic spline. 
+
+The most common choices are 3, 4, or 5 knots. 
+
+- 3 Knots, 2 degrees of freedom, allows the curve to "bend" once.
+- 4 Knots, 3 degrees of freedom, lets the curve "bend" twice.
+- 5 Knots, 4 degrees of freedom, lets the curve "bend" three times. 
+
+## A simulated data set
+
+```{r}
+#| echo: true
+set.seed(4322021)
+
+sim_data <- tibble(
+    x = runif(250, min = 10, max = 50),
+    y = 3*(x-30) - 0.3*(x-30)^2 + 0.05*(x-30)^3 + 
+        rnorm(250, mean = 500, sd = 70)
+)
+
+head(sim_data, 2)
+```
+
+## The `sim_data`, plotted.
+
+```{r}
+p1 <- ggplot(sim_data, aes(x = x, y = y)) + 
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "lm", col = "red", se = FALSE) +
+    labs(title = "With Linear Fit")
+
+p2 <- ggplot(sim_data, aes(x = x, y = y)) + 
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "loess", col = "blue", se = FALSE) +
+    labs(title = "With Loess Smooth")
+
+p1 + p2
+```
+
+
+## Fitting Restricted Cubic Splines with `lm` and `rcs`
+
+```{r}
+#| echo: true
+sim_linear <- lm(y ~ x, data = sim_data)
+sim_poly2  <- lm(y ~ poly(x, 2), data = sim_data)
+sim_poly3  <- lm(y ~ poly(x, 3), data = sim_data)
+sim_rcs3   <- lm(y ~ rcs(x, 3), data = sim_data)
+sim_rcs4   <- lm(y ~ rcs(x, 4), data = sim_data)
+sim_rcs5   <- lm(y ~ rcs(x, 5), data = sim_data)
+```
+
+```{r}
+#| message: false
+sim_linear_aug <- augment(sim_linear, sim_data)
+sim_poly2_aug <- augment(sim_poly2, sim_data)
+sim_poly3_aug <- augment(sim_poly3, sim_data)
+sim_rcs3_aug <- augment(sim_rcs3, sim_data)
+sim_rcs4_aug <- augment(sim_rcs4, sim_data)
+sim_rcs5_aug <- augment(sim_rcs5, sim_data)
+```
+
+## Looking at the Polynomial Fits
+
+```{r}
+p1 <- ggplot(sim_data, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", col = "black", se = F) +
+    labs(title = "Linear Fit") 
+
+p2 <- ggplot(sim_data, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", col = "forestgreen", se = F) +
+    labs(title = "Loess Smooth") 
+
+p3 <- ggplot(sim_poly2_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "blue", size = 1.25) +
+    labs(title = "Quadratic Polynomial") 
+
+p4 <- ggplot(sim_poly3_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "purple", size = 1.25) +
+    labs(title = "Cubic Polynomial") 
+
+(p1 + p2) / (p3 + p4)
+```
+
+## Looking at the Restricted Cubic Spline Fits
+
+```{r}
+p0 <- ggplot(sim_data, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", col = "black", se = F) +
+    labs(title = "Linear Fit") 
+
+p3 <- ggplot(sim_rcs3_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "blue", size = 1.25) +
+    labs(title = "RCS with 3 knots") 
+
+p4 <- ggplot(sim_rcs4_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "red", size = 1.25) +
+    labs(title = "RCS with 4 knots") 
+
+p5 <- ggplot(sim_rcs5_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "purple", size = 1.25) +
+    labs(title = "RCS with 5 knots") 
+
+(p0 + p3) / (p4 + p5)
+```
+
+
+## Fitting Restricted Cubic Splines with `lm` and `rcs`
+
+For most applications, three to five knots strike a nice balance between complicating the model needlessly and fitting data pleasingly. Let's consider a restricted cubic spline model for `bmi` based on `fruit_day` again, but now with:
+
+- in `temp3`, 3 knots, and
+- in `temp4`, 4 knots,
+
+```{r}
+#| echo: true
+temp3 <- lm(bmi ~ rcs(fruit_day, 3), data = train_c4im)
+temp4 <- lm(bmi ~ rcs(fruit_day, 4), data = train_c4im)
+```
+
+
+## Spline models for `bmi` and `fruit_day`
+
+```{r}
+temp3_aug <- augment(temp3, train_c4im)
+temp4_aug <- augment(temp4, train_c4im)
+
+p1 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", col = "black", se = F) +
+    labs(title = "Linear Fit") 
+
+p2 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", col = "purple", se = F) +
+    labs(title = "Loess Smooth") 
+
+p3 <- ggplot(temp3_aug, aes(x = fruit_day, y = bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = fruit_day, y = .fitted), 
+              col = "blue", size = 1.25) +
+    labs(title = "RCS, 3 knots") 
+
+p4 <- ggplot(temp4_aug, aes(x = fruit_day, y = bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = fruit_day, y = .fitted), 
+              col = "red", size = 1.25) +
+    labs(title = "RCS, 4 knots") 
+
+(p1 + p2) / (p3 + p4)
+```
+
+## Let's try an RCS with 4 knots
+
+```{r}
+#| echo: true
+m_4 <- lm(bmi ~ rcs(fruit_day, 4) + exerany + health,
+          data = train_c4im)
+
+m_4int <- lm(bmi ~ rcs(fruit_day, 4) + exerany * health,
+          data = train_c4im)
+```
+
+Comparing 4 models including the `exerany*health` interaction... 
+
+```{r}
+bind_rows(glance(m1int), glance(m2int), 
+          glance(m3int), glance(m_4int)) |>
+  mutate(mod = c("m1int", "m2int", "m3int", "m_4int")) |>
+  mutate(fruit = c("not in", "linear", "poly(2)", "rcs(4)")) |>
+  select(mod, fruit, r.sq = r.squared, adj.r.sq = adj.r.squared, 
+         sigma, df, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
+```
+
+
+## Tidied summary of `m_4int` coefficients
+
+```{r}
+tidy(m_4int, conf.int = TRUE, conf.level = 0.90) |>
+  rename(est = estimate, se = std.error, t = statistic, 
+         p = p.value, lo90 = conf.low, hi90 = conf.high) |> 
+  gt() |> tab_options(table.font.size = 20)
+```
+
+## `m_4int` Residual Plots
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_4int, which = c(1,2))
+```
+
+## `m_4int` Residual Plots
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_4int, which = c(3,5))
+```
+
+## How do models `m_4` and `m_4int` do in testing?
+
+```{r, echo = FALSE}
+m4_test_aug <- augment(m_4, newdata = test_c4im)
+m4int_test_aug <- augment(m_4int, newdata = test_c4im)
+
+testing_r2 <- bind_rows(
+    rsq(m1_test_aug, truth = bmi, estimate = .fitted),
+    rsq(m2_test_aug, truth = bmi, estimate = .fitted),
+    rsq(m3_test_aug, truth = bmi, estimate = .fitted),
+    rsq(m4_test_aug, truth = bmi, estimate = .fitted),
+    rsq(m1int_test_aug, truth = bmi, estimate = .fitted),
+    rsq(m2int_test_aug, truth = bmi, estimate = .fitted),
+    rsq(m3int_test_aug, truth = bmi, estimate = .fitted), 
+    rsq(m4int_test_aug, truth = bmi, estimate = .fitted)) |>
+    mutate(model = c("m1", "m2", "m3", "m_4", 
+                     "m1int", "m2int", "m3int", "m_4int"))
+
+testing_rmse <- bind_rows(
+    rmse(m1_test_aug, truth = bmi, estimate = .fitted),
+    rmse(m2_test_aug, truth = bmi, estimate = .fitted),
+    rmse(m3_test_aug, truth = bmi, estimate = .fitted),
+    rmse(m4_test_aug, truth = bmi, estimate = .fitted),
+    rmse(m1int_test_aug, truth = bmi, estimate = .fitted),
+    rmse(m2int_test_aug, truth = bmi, estimate = .fitted),
+    rmse(m3int_test_aug, truth = bmi, estimate = .fitted), 
+    rmse(m4int_test_aug, truth = bmi, estimate = .fitted)) |>
+    mutate(model = c("m1", "m2", "m3", "m_4", 
+                     "m1int", "m2int", "m3int", "m_4int"))
+
+testing_mae <- bind_rows(
+    mae(m1_test_aug, truth = bmi, estimate = .fitted),
+    mae(m2_test_aug, truth = bmi, estimate = .fitted),
+    mae(m3_test_aug, truth = bmi, estimate = .fitted),
+    mae(m4_test_aug, truth = bmi, estimate = .fitted),
+    mae(m1int_test_aug, truth = bmi, estimate = .fitted),
+    mae(m2int_test_aug, truth = bmi, estimate = .fitted),
+    mae(m3int_test_aug, truth = bmi, estimate = .fitted), 
+    mae(m4int_test_aug, truth = bmi, estimate = .fitted)) |>
+    mutate(model = c("m1", "m2", "m3", "m_4", 
+                     "m1int", "m2int", "m3int", "m_4int"))
+
+bind_cols(testing_r2 |> select(model, rsquare = .estimate), 
+          testing_rmse |> select(rmse = .estimate),
+          testing_mae |> select(mae = .estimate)) |> 
+  gt() |> tab_options(table.font.size = 20)
+```
+
+I'll note that there's a fair amount of very repetitive code in the Quarto file to create that table. 
+
+- What are our conclusions?
+
+
 ## Today's Agenda
 
 - The HELP study (today's data) and preliminaries
