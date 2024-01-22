@@ -28,10 +28,6 @@ format:
 
 How the `class4im` data were created from `smart_ohio.csv`
 
-- Data Ingest, Cleaning, and Single Imputation to deal with missingness (assumes MAR)
-
-[Chapters 6-13 of the Course Notes](https://thomaselove.github.io/432-notes/) are relevant here.
-
 ## Today's R Setup
 
 ```{r}
@@ -41,7 +37,7 @@ knitr::opts_chunk$set(comment = NA)
 
 library(janitor)
 library(broom)
-library(knitr)
+library(gt)
 library(mosaic)
 library(patchwork)       
 library(naniar)
@@ -54,12 +50,18 @@ library(tidyverse)
 theme_set(theme_bw()) 
 ```
 
-# The `class4im` data (creation described in some detail in Appendix)
+# The `class4im` data
 
-## Codebook for useful `class4im` variables
+## The `class4im` data
 
 - 894 subjects in Cleveland-Elyria with `bmi` and no history of diabetes (missing values singly imputed: assume MAR)
-- There are 9 variables in the data but we'll use only these five today.
+- All subjects have `hx_diabetes` (all 0), and are located in the `MMSA` labeled Cleveland-Elyria.
+- See [Course Notes Chapter on BRFSS SMART data](https://thomaselove.github.io/432-notes/06-smart.html) for variable details
+- Appendix provides details on data development.
+
+## The Five Variables We'll Use Today
+ 
+9 variables in the data but we'll use only these 5 today.
 
 Variable | Description
 :----: | --------------------------------------
@@ -68,10 +70,6 @@ Variable | Description
 `exerany` | any exercise in the past month: 1 = yes, 0 = no
 `genhealth` | self-reported overall health (5 levels)
 `fruit_day` | average fruit servings consumed per day
-
-- All subjects have `hx_diabetes` (all 0), and `MMSA` (Cleveland-Elyria).
-- See [Course Notes Chapter on BRFSS SMART data](https://thomaselove.github.io/432-notes/06-smart.html) for variable details
-- Appendix provides details on data development.
 
 ## Data Load
 
@@ -96,14 +94,17 @@ c(nrow(class4im), nrow(train_c4im), nrow(test_c4im))
 ## Models We'll Build Today
 
 1. Predict `bmi` using `exer_any` and `genhealth` (both categorical)
-  - without and then with an interaction between the two predictors
+    - without and then with an interaction between the two predictors
 2. Add in a quantitative covariate, `fruit_day`, first simply as a main (and linear) effect
+
+## More Models We'll Build
+
 3. Incorporate the `fruit_day` information using a quadratic polynomial instead.
 4. Incorporate the `fruit_day` information using a restricted cubic spline with 4 knots instead.
 
 We'll fit all of these models with `lm`, and assess them in terms of in-sample (training) fit and out-of-sample (testing) performance.
 
-## We could, but won't transform our outcome.
+## We might, but won't transform `bmi`.
 
 ```{r}
 p1 <- ggplot(train_c4im, aes(x = bmi)) + 
@@ -124,7 +125,7 @@ p1 / p2
 summaries_1 <- train_c4im |>
     group_by(exerany, health) |>
     summarise(n = n(), mean = mean(bmi), stdev = sd(bmi))
-summaries_1 |> kable(digits = 2)
+summaries_1 
 ```
 
 ## Code for Interaction Plot 
@@ -159,12 +160,11 @@ ggplot(summaries_1, aes(x = health, y = mean,
 
 # Fitting a Two-Way ANOVA model for BMI
 
-## Building a Model (`m_1`) without interaction
+## Model `m_1` without interaction
 
 ```{r}
 #| echo: true
-m_1 <- lm(bmi ~ exerany + health,
-          data = train_c4im)
+m_1 <- lm(bmi ~ exerany + health, data = train_c4im)
 ```
 
 - How well does this model fit the training data?
@@ -173,24 +173,23 @@ m_1 <- lm(bmi ~ exerany + health,
 #| echo: true
 glance(m_1) |> 
     select(r.squared, adj.r.squared, sigma, nobs, 
-           df, df.residual, AIC, BIC) |>
-    kable(digits = c(3, 3, 2, 0, 0, 0, 1, 1))
+           df, df.residual, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 ## Tidied ANOVA for `m_1`
 
 ```{r}
 #| echo: true
-tidy(anova(m_1)) |>
-    kable(dig = c(0, 0, 2, 2, 2, 3))
+tidy(anova(m_1)) |> gt() |> tab_options(table.font.size = 20)
 ```
 
 ## Tidied summary of `m_1` coefficients
 
 ```{r}
 #| echo: true
-tidy(m_1, conf.int = TRUE, conf.level = 0.90) |>
-    kable(digits = c(0,2,2,2,3,2,2))
+tidy(m_1, conf.int = TRUE, conf.level = 0.90) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 ## Interpreting `m_1`
@@ -205,10 +204,18 @@ Meg | 1 | Fair | 27.91 - 2.20 + 3.71 = 29.42
 - Effect of `exerany`?
 - Effect of `health` = Fair instead of Excellent?
 
-## `m_1` Residual Plots (conclusions?)
+## `m_1` Residual Plots
 
 ```{r}
-par(mfrow = c(2,2)); plot(m_1); par(mfrow = c(1,1))
+#| echo: true
+par(mfrow = c(1,2)); plot(m_1, which = c(1,2))
+```
+
+## `m_1` Residual Plots
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_1, which = c(3,5))
 ```
 
 # Fitting ANOVA model `m_1int` including interaction
@@ -217,27 +224,25 @@ par(mfrow = c(2,2)); plot(m_1); par(mfrow = c(1,1))
 
 ```{r}
 #| echo: true
-m_1int <- lm(bmi ~ exerany * health,
-             data = train_c4im)
+m_1int <- lm(bmi ~ exerany * health, data = train_c4im)
 ```
 
-- How does this model compare in terms of fit to the training data?
+- How do our models compare on fit to the training data?
 
 ```{r}
 #| echo: true
 bind_rows(glance(m_1), glance(m_1int)) |> 
     mutate(mod = c("m_1", "m_1int")) |>
     select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-       sigma, nobs, df, df.res = df.residual, AIC, BIC) |>
-    kable(digits = c(0, 3, 3, 2, 0, 0, 0, 1, 1))
+       sigma, nobs, df, df.res = df.residual, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 ## ANOVA for the `m_1int` model
 
 ```{r}
 #| echo: true
-tidy(anova(m_1int)) |>
-    kable(dig = c(0, 0, 2, 2, 2, 3))
+tidy(anova(m_1int)) |> gt() |> tab_options(table.font.size = 20)
 ```
 
 ## ANOVA test comparing `m_1` to `m_1int`
@@ -247,13 +252,13 @@ tidy(anova(m_1int)) |>
 anova(m_1, m_1int)
 ```
 
-## Tidied summary of `m_1int` coefficients
+## `m_1int` coefficients
 
 ```{r}
 #| echo: true
 tidy(m_1int, conf.int = TRUE, conf.level = 0.90) |>
-    rename(se = std.error, t = statistic, p = p.value) |>
-    kable(digits = c(0,2,2,2,3,2,2))
+  rename(se = std.error, t = statistic, p = p.value) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 ## Interpreting the `m_1int` model
@@ -266,6 +271,9 @@ Billy | 0 | Fair | 27.49 + 7.64 = 35.13
 Meg | 1 | Fair | 27.49 - 1.69 + 7.64 - 6.22 = 27.22
 
 - How do we interpret effect sizes here? **It depends**.
+
+## Interpreting the `m_1int` model
+
 - Effect of `exerany`?
     - If `health` = Excellent, effect is -1.69
     - If `health` = Fair, effect is (-1.69 - 6.22) = -7.91
@@ -273,20 +281,27 @@ Meg | 1 | Fair | 27.49 - 1.69 + 7.64 - 6.22 = 27.22
     - If `exerany` = 0 (no), effect is 7.64
     - If `exerany` = 1 (yes), effect is (7.64 - 6.22) = 1.42
 
-## Plot the Residuals from model `m_1int`?
+## Residuals from `m_1int`?
 
 ```{r}
-par(mfrow = c(2,2)); plot(m_1int); par(mfrow = c(1,1))
+#| echo: true
+par(mfrow = c(1,2)); plot(m_1int, which = c(1,2))
+```
+
+## Residuals from `m_1int`?
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_1int, which = c(3,5))
 ```
 
 # Incorporating a Covariate (as a main and linear effect) into our two-way ANOVA models
 
-## Adding in the covariate `fruit_day` to `m_1`
+## Add `fruit_day` to `m_1`
 
 ```{r}
 #| echo: true
-m_2 <- lm(bmi ~ fruit_day + exerany + health,
-          data = train_c4im)
+m_2 <- lm(bmi ~ fruit_day + exerany + health, data = train_c4im)
 ```
 
 - How well does this model fit the training data?
@@ -294,33 +309,40 @@ m_2 <- lm(bmi ~ fruit_day + exerany + health,
 ```{r}
 #| echo: true
 bind_rows(glance(m_1), glance(m_2)) |>
-    mutate(mod = c("m_1", "m_2")) |>
-    select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-        sigma, df, df.res = df.residual, AIC, BIC) |>
-    kable(digits = c(0, 3, 3, 2, 0, 0, 1, 1))
+  mutate(mod = c("m_1", "m_2")) |>
+  select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
+         sigma, df, df.res = df.residual, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 ## ANOVA for the `m_2` model
 
 ```{r}
 #| echo: true
-tidy(anova(m_2)) |>
-    kable(dig = c(0, 0, 2, 2, 2, 3))
+tidy(anova(m_2)) |> gt() |> tab_options(table.font.size = 20)
 ```
 
 
-## Tidied summary of `m_2` coefficients
+## `m_2` coefficients
 
 ```{r}
 #| echo: true
 tidy(m_2, conf.int = TRUE, conf.level = 0.90) |>
-    kable(digits = c(0,2,2,2,3,2,2))
+  gt() |> tab_options(table.font.size = 20)
 ```
 
-## `m_2` Residual Plots (non-constant variance?)
+## `m_2` Residuals
 
 ```{r}
-par(mfrow = c(2,2)); plot(m_2); par(mfrow = c(1,1))
+#| echo: true
+par(mfrow = c(1,2)); plot(m_2, which = c(1,2))
+```
+
+## `m_2` Residuals
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_2, which = c(3,5))
 ```
 
 ## Who is that poorest fit case?
@@ -330,10 +352,11 @@ Plot suggests we look at row 28
 ```{r}
 #| echo: true
 train_c4im |> slice(28) |>
-    select(ID, bmi, fruit_day, exerany, health) |> kable()
+  select(ID, bmi, fruit_day, exerany, health) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
-What is unusual about this subject?
+## What is unusual about this subject?
 
 ```{r}
 #| echo: true
@@ -341,7 +364,7 @@ train_c4im |> arrange(desc(bmi))
 ```
 
 
-## What if we included the interaction term?
+## Include the interaction term?
 
 ```{r}
 #| echo: true
@@ -353,30 +376,37 @@ m_2int <- lm(bmi ~ fruit_day + exerany * health,
 
 ```{r}
 #| echo: true
-tidy(anova(m_2int)) |>
-    kable(dig = c(0, 0, 2, 2, 2, 3))
+tidy(anova(m_2int)) |> gt() |> tab_options(table.font.size = 20)
 ```
 
-## Tidied summary of `m_2int` coefficients
+## `m_2int` coefficients
 
 ```{r}
 #| echo: true
 tidy(m_2int, conf.int = TRUE, conf.level = 0.90) |>
-    rename(se = std.error, t = statistic, p = p.value) |>
-    kable(digits = c(0,2,2,2,3,2,2))
+  rename(se = std.error, t = statistic, p = p.value) |> 
+  gt() |> tab_options(table.font.size = 18)
 ```
 
-## ANOVA comparison of `m_2` and `m_2int`
+## ANOVA: Compare `m_2` & `m_2int`
 
 ```{r}
 #| echo: true
 anova(m_2, m_2int)
 ```
 
-## Residual plots for model `m_2int`?
+## `m_2int` Residuals
 
 ```{r}
-par(mfrow = c(2,2)); plot(m_2int); par(mfrow = c(1,1))
+#| echo: true
+par(mfrow = c(1,2)); plot(m_2int, which = c(1,2))
+```
+
+## `m_2int` Residuals
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_2int, which = c(3,5))
 ```
 
 ## Which of the four models fits best?
@@ -385,17 +415,18 @@ In the **training** sample, we have...
 
 ```{r}
 bind_rows(glance(m_1), glance(m_2), glance(m_1int), glance(m_2int)) |>
-    mutate(mod = c("m_1", "m_2", "m_1int", "m_2int")) |>
-    select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-           sigma, df, df.res = df.residual, AIC, BIC) |>
-    kable(digits = c(0, 3, 3, 2, 0, 0, 1, 1))
+  mutate(mod = c("m_1", "m_2", "m_1int", "m_2int")) |>
+  select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
+         sigma, df, df.res = df.residual, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 - Adjusted $R^2$, $\sigma$, AIC and BIC all improve as we move down from `m1` towards `m2_int`. 
 - BUT the training sample cannot judge between models accurately. Our models have already *seen* that data.
-- For fairer comparisons, we'll need to also consider the (held out) testing sample.
 
-## Model predictions of `bmi` in the test sample
+## Predicting `bmi` in the test sample
+
+- For fairer comparisons, consider the held-out sample.
 
 We'll use `augment` from the `broom` package...
 
@@ -412,17 +443,19 @@ This adds fitted values (predictions) and residuals (errors) ...
 ```{r}
 #| echo: true
 m1_test_aug |> select(ID, bmi, .fitted, .resid) |> 
-    slice(1:2) |> kable()
+    slice(1:2) |> gt() |> tab_options(table.font.size = 20)
 ```
 
-## What does the `yardstick` package do?
+## The `yardstick` package
 
 For each subject in the testing set, we will need:
 
 - estimate = model's prediction of that subject's `bmi`
 - truth = the `bmi` value observed for that subject
 
-Calculate a summary of the predictions across the $n$ test subjects, such as:
+Calculate a summary of the predictions across the $n$ test subjects
+
+## Summaries from `yardstick`
 
 - $R^2$ = square of the correlation between truth and estimate 
 - `mae` = mean absolute error ...
@@ -449,7 +482,7 @@ testing_r2 <- bind_rows(
     rsq(m2_test_aug, truth = bmi, estimate = .fitted),
     rsq(m2int_test_aug, truth = bmi, estimate = .fitted)) |>
     mutate(model = c("m_1", "m_1int", "m_2", "m_2int"))
-testing_r2 |> kable(dig = 4)
+testing_r2 |> gt() |> tab_options(table.font.size = 20)
 ```
 
 
@@ -465,7 +498,7 @@ testing_mae <- bind_rows(
     mae(m2_test_aug, truth = bmi, estimate = .fitted),
     mae(m2int_test_aug, truth = bmi, estimate = .fitted)) |>
     mutate(model = c("m_1", "m_1int", "m_2", "m_2int"))
-testing_mae |> kable(dig = 2)
+testing_mae |> gt() |> tab_options(table.font.size = 20)
 ```
 
 
@@ -481,21 +514,24 @@ testing_rmse <- bind_rows(
    rmse(m2_test_aug, truth = bmi, estimate = .fitted),
    rmse(m2int_test_aug, truth = bmi, estimate = .fitted)) |>
    mutate(model = c("m_1", "m_1int", "m_2", "m_2int"))
-testing_rmse |> kable(digits = 3)
+testing_rmse |> gt() |> tab_options(table.font.size = 20)
 ```
 
-## Other Summaries for Numerical Predictions
-
-Within the `yardstick` package, there are several other summaries, including:
+## Other `yardstick` summaries (1)
 
 - `rsq_trad()` = defines $R^2$ using sums of squares. 
-    - The `rsq()` measure we showed a few slides ago is a squared correlation coefficient and is guaranteed to fall in (0, 1).
+    - The `rsq()` measure we showed a few slides ago is a squared correlation coefficient guaranteed to be in (0, 1).
 - `mape()` = mean absolute percentage error
 - `mpe()` = mean percentage error
+
+## Other `yardstick` summaries (2)
+
 - `huber_loss()` = Huber loss (often used in robust regression), which is less sensitive to outliers than `rmse()`.
 - `ccc()` = concordance correlation coefficient, which attempts to measure both consistency/correlation (like `rsq()`) and accuracy (like `rmse()`).
 
 See [the yardstick home page](https://yardstick.tidymodels.org/index.html) for more details.
+
+# Can I STOP HERE???!?!?!?!?
 
 # Incorporating Non-Linearity into our models
 
@@ -574,8 +610,8 @@ temp1 <- lm(bmi ~ fruit_day + I(fruit_day^2),
 
 ```{r}
 #| echo: true
-augment(temp1, newdata = tibble(fruit_day = 2)) |>
-    kable(digits = 3)
+augment(temp1, newdata = tibble(fruit_day = 2)) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 and this matches our "by hand" calculation. But it turns out most regression models use *orthogonal* rather than raw polynomials...
@@ -601,8 +637,8 @@ Now, what happens with the orthogonal polynomial model `temp2` we just fit?
 
 ```{r}
 #| echo: true
-augment(temp2, newdata = data.frame(fruit_day = 2)) |>
-    kable(digits = 3)
+augment(temp2, newdata = data.frame(fruit_day = 2)) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 - No change in the prediction.
@@ -667,10 +703,10 @@ m_3 <- lm(bmi ~ poly(fruit_day,2) + exerany + health,
 
 ```{r}
 bind_rows(glance(m_1), glance(m_2), glance(m_3)) |>
-    mutate(mod = c("m_1", "m_2", "m_3")) |>
-    select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-        sigma, df, df.res = df.residual, AIC, BIC) |>
-    kable(digits = c(0, 4, 4, 2, 0, 0, 1, 1))
+  mutate(mod = c("m_1", "m_2", "m_3")) |>
+  select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
+         sigma, df, df.res = df.residual, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 
@@ -678,14 +714,23 @@ bind_rows(glance(m_1), glance(m_2), glance(m_3)) |>
 
 ```{r}
 tidy(m_3, conf.int = TRUE, conf.level = 0.90) |>
-    rename(est = estimate, se = std.error, t = statistic, p = p.value) |>
-    kable(digits = c(0,2,2,2,3,2,2))
+  rename(est = estimate, se = std.error, t = statistic, 
+         p = p.value) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
-## `m_3` Residual Plots
+## `m_3` Residuals
 
 ```{r}
-par(mfrow = c(2,2)); plot(m_3); par(mfrow = c(1,1))
+#| echo: true
+par(mfrow = c(1,2)); plot(m_3, which = c(1,2))
+```
+
+## `m_3` Residuals
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_3, which = c(3,5))
 ```
 
 ## Add in the interaction
@@ -700,10 +745,11 @@ m_3int <- lm(bmi ~ poly(fruit_day,2) + exerany * health,
 
 ```{r}
 bind_rows(glance(m_1int), glance(m_2int), glance(m_3int)) |>
-    mutate(mod = c("m_1int", "m_2int", "m_3int")) |>
-    select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-        sigma, df, df.res = df.residual, AIC, BIC) |>
-    kable(digits = c(0, 4, 4, 2, 0, 0, 1, 1))
+  mutate(mod = c("m_1int", "m_2int", "m_3int")) |>
+  select(mod, r.sq = r.squared, adj.r.sq = adj.r.squared, 
+         sigma, df, df.res = df.residual, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
+
 ```
 
 
@@ -711,15 +757,25 @@ bind_rows(glance(m_1int), glance(m_2int), glance(m_3int)) |>
 
 ```{r}
 tidy(m_3int, conf.int = TRUE, conf.level = 0.90) |>
-    rename(est = estimate, se = std.error, t = statistic, p = p.value) |>
-    kable(digits = c(0,2,2,2,3,2,2))
+    rename(est = estimate, se = std.error, t = statistic, 
+           p = p.value) |> gt() |> tab_options(table.font.size = 20)
+
 ```
 
-## `m_3int` Residual Plots
+## `m_3int` Residuals
 
 ```{r}
-par(mfrow = c(2,2)); plot(m_3int); par(mfrow = c(1,1))
+#| echo: true
+par(mfrow = c(1,2)); plot(m_3int, which = c(1,2))
 ```
+
+## `m_3int` Residuals
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_3int, which = c(3,5))
+```
+
 
 ## How do models `m_3` and `m_3int` do in testing?
 
@@ -769,8 +825,8 @@ testing_mae <- bind_rows(
 #| echo: true
 bind_cols(testing_r2 |> select(model, rsquare = .estimate), 
           testing_rmse |> select(rmse = .estimate),
-          testing_mae |> select(mae = .estimate)) |>
-    kable(digits = c(0, 4, 3, 3))
+          testing_mae |> select(mae = .estimate)) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 - Did the polynomial term in `m_3` and `m_3int` improve our predictions?
@@ -961,12 +1017,13 @@ m_4int <- lm(bmi ~ rcs(fruit_day, 4) + exerany * health,
 Comparing 4 models including the `exerany*health` interaction... 
 
 ```{r}
-bind_rows(glance(m_1int), glance(m_2int), glance(m_3int), glance(m_4int)) |>
-    mutate(mod = c("m_1int", "m_2int", "m_3int", "m_4int")) |>
-    mutate(fruit = c("not in", "linear", "poly(2)", "rcs(4)")) |>
-    select(mod, fruit, r.sq = r.squared, adj.r.sq = adj.r.squared, 
-        sigma, df, AIC, BIC) |>
-    kable(digits = c(0, 0, 4, 4, 3, 0, 1, 1))
+bind_rows(glance(m_1int), glance(m_2int), 
+          glance(m_3int), glance(m_4int)) |>
+  mutate(mod = c("m_1int", "m_2int", "m_3int", "m_4int")) |>
+  mutate(fruit = c("not in", "linear", "poly(2)", "rcs(4)")) |>
+  select(mod, fruit, r.sq = r.squared, adj.r.sq = adj.r.squared, 
+         sigma, df, AIC, BIC) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 
@@ -974,15 +1031,23 @@ bind_rows(glance(m_1int), glance(m_2int), glance(m_3int), glance(m_4int)) |>
 
 ```{r}
 tidy(m_4int, conf.int = TRUE, conf.level = 0.90) |>
-    rename(est = estimate, se = std.error, t = statistic, 
-           p = p.value, lo90 = conf.low, hi90 = conf.high) |>
-    kable(digits = c(0,2,2,2,3,2,2))
+  rename(est = estimate, se = std.error, t = statistic, 
+         p = p.value, lo90 = conf.low, hi90 = conf.high) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 ## `m_4int` Residual Plots
 
 ```{r}
-par(mfrow = c(2,2)); plot(m_4int); par(mfrow = c(1,1))
+#| echo: true
+par(mfrow = c(1,2)); plot(m_4int, which = c(1,2))
+```
+
+## `m_4int` Residual Plots
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_4int, which = c(3,5))
 ```
 
 ## How do models `m_4` and `m_4int` do in testing?
@@ -1029,8 +1094,8 @@ testing_mae <- bind_rows(
 
 bind_cols(testing_r2 |> select(model, rsquare = .estimate), 
           testing_rmse |> select(rmse = .estimate),
-          testing_mae |> select(mae = .estimate)) |>
-    kable(digits = c(0, 4, 3, 3))
+          testing_mae |> select(mae = .estimate)) |> 
+  gt() |> tab_options(table.font.size = 20)
 ```
 
 I'll note that there's a fair amount of very repetitive code in the Quarto file to create that table. 
