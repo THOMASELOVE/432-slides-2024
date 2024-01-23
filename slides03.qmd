@@ -602,7 +602,8 @@ svyttest(Depression ~ Age_group, subset(NH_des_dat2,
 
 ## Next Time?
 
-Linear Regression and ANOVA / ANCOVA models
+- Linear Regression and ANOVA / ANCOVA models
+- Incorporating Polynomials into our models
 
 ### Reminders
 
