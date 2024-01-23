@@ -81,7 +81,23 @@ c4im |> n_miss()
 identical(nrow(c4im), n_distinct(c4im$ID))
 ```
 
-### Splitting the Sample
+## Our covariate, `fruit_day`
+
+Our main interest is in the factors `exerany` and `genhealth`.
+
+Later, we'll adjust for the (quantitative) covariate `fruit_day`. Here, we'll be including the covariate to help account for some nuisance variation, rather than being deeply interested in the impact of `fruit_day` on `bmi`. A common approach, then, is centering the predictor prior to including it.
+
+```{r}
+c4im <- c4im |>
+  mutate(fruit_c = fruit_day - mean(fruit_day))
+
+df_stats(~ fruit_day + fruit_c, data = c4im) |> gt() |>
+  fmt_number(columns = min:sd, decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+
+## Splitting the Sample
 
 ```{r}
 #| echo: true
@@ -96,8 +112,8 @@ c(nrow(c4im), nrow(train_c4im), nrow(test_c4im))
 
 1. Predict `bmi` using `exer_any` and `genhealth` (both categorical)
     - without then with an interaction between the predictors
-2. Add in a quantitative covariate, `fruit_day`.
-3. Incorporate `fruit_day` using a quadratic polynomial.
+2. Add in a (centered) quantitative covariate, `fruit_c`.
+3. Incorporate `fruit_c` using a quadratic polynomial.
 
 We'll fit all of these models with `lm`, and assess them in terms of in-sample (training) fit and out-of-sample (testing) performance.
 
@@ -338,11 +354,11 @@ par(mfrow = c(1,2)); plot(m1int, which = c(3,5))
 
 # Incorporating a Covariate into our two-way ANOVA models
 
-## Add `fruit_day` to `m1`
+## Add `fruit_c` to `m1`
 
 ```{r}
 #| echo: true
-m2 <- lm(1000/bmi ~ fruit_day + exerany + health, data = train_c4im)
+m2 <- lm(1000/bmi ~ fruit_c + exerany + health, data = train_c4im)
 ```
 
 - How well does this model fit the training data?
@@ -396,7 +412,7 @@ par(mfrow = c(1,2)); plot(m2, which = c(3,5))
 
 ```{r}
 #| echo: true
-m2int <- lm(1000/bmi ~ fruit_day + exerany * health, 
+m2int <- lm(1000/bmi ~ fruit_c + exerany * health, 
           data = train_c4im)
 ```
 
@@ -624,14 +640,14 @@ For example:
 
 Fitting such a model creates a **polynomial regression**.
 
-## Adding a polynomial in `fruit_day`
+## Adding a polynomial in `fruit_c`
 
-Can we predict `1000/bmi` with a polynomial in `fruit_day`?
+Can we predict `1000/bmi` with a polynomial in `fruit_c`?
 
 ```
-lm(1000/bmi ~ fruit_day, data = train_c4im)
-lm(1000/bmi ~ poly(fruit_day, 2), data = train_c4im)
-lm(1000/bmi ~ poly(fruit_day, 3), data = train_c4im)
+lm(1000/bmi ~ fruit_c, data = train_c4im)
+lm(1000/bmi ~ poly(fruit_c, 2), data = train_c4im)
+lm(1000/bmi ~ poly(fruit_c, 3), data = train_c4im)
 ```
 
 ## Plotting the Polynomials
@@ -639,19 +655,19 @@ lm(1000/bmi ~ poly(fruit_day, 3), data = train_c4im)
 ```{r}
 #| echo: true
 #| output-location: slide
-p1 <- ggplot(train_c4im, aes(x = fruit_day, y = 1000/bmi)) +
+p1 <- ggplot(train_c4im, aes(x = fruit_c, y = 1000/bmi)) +
     geom_point(alpha = 0.3) + 
     geom_smooth(formula = y ~ x, method = "lm", 
                 col = "red", se = FALSE) + 
     labs(title = "Linear Fit")
 
-p2 <- ggplot(train_c4im, aes(x = fruit_day, y = 1000/bmi)) +
+p2 <- ggplot(train_c4im, aes(x = fruit_c, y = 1000/bmi)) +
     geom_point(alpha = 0.3) + 
     geom_smooth(formula = y ~ poly(x, 2), method = "lm",
                 col = "blue", se = FALSE) +
     labs(title = "2nd order Polynomial")
 
-p3 <- ggplot(train_c4im, aes(x = fruit_day, y = 1000/bmi)) +
+p3 <- ggplot(train_c4im, aes(x = fruit_c, y = 1000/bmi)) +
     geom_point(alpha = 0.3) + 
     geom_smooth(formula = y ~ poly(x, 3), method = "lm",
                 col = "purple", se = FALSE) +
@@ -664,57 +680,57 @@ p1 + p2 + p3
 
 ## Raw vs. Orthogonal Polynomials
 
-Predict `1000/bmi` using `fruit_day` with a "raw polynomial of degree 2."
+Predict `1000/bmi` using `fruit_c` with a "raw polynomial of degree 2."
 
 ```{r}
 #| echo: true
-(temp1 <- lm(1000/bmi ~ fruit_day + I(fruit_day^2), 
+(temp1 <- lm(1000/bmi ~ fruit_c + I(fruit_c^2), 
              data = train_c4im))
 ```
 
-Predicted `1000/bmi` for `fruit_day = 2` is 
+Predicted `1000/bmi` for `fruit_c = 0.5` is 
 
 ```
-1000/bmi = 35.4429 + 1.5095 (fruit_day) - 0.1201 (fruit_day^2)
-         = 35.4429 + 1.5095 (2) - 0.1201 (4)
-         = 37.9815
+1000/bmi = 37.3653 + 1.1640 (fruit_c) - 0.1201 (fruit_c^2)
+         = 37.3653 + 1.1640 (0.5) - 0.1201 (0.25)
+         = 37.91727
 ```
 
 ## Does the raw polynomial match our expectations?
 
 ```{r}
 #| echo: true
-temp1 <- lm(1000/bmi ~ fruit_day + I(fruit_day^2), 
+temp1 <- lm(1000/bmi ~ fruit_c + I(fruit_c^2), 
              data = train_c4im)
 
-augment(temp1, newdata = tibble(fruit_day = 2)) |> 
+augment(temp1, newdata = tibble(fruit_c = 0.5)) |> 
   gt() |> tab_options(table.font.size = 20)
 ```
 
-This matches our "by hand" calculation, within rounding error.
+This matches our "by hand" calculation.
 
 - But it turns out most regression models use *orthogonal* rather than raw polynomials...
 
 ## Fitting an Orthogonal Polynomial
 
-Predict `1000/bmi` using `fruit_day` with an *orthogonal* polynomial of degree 2.
+Predict `1000/bmi` using `fruit_c` with an *orthogonal* polynomial of degree 2.
 
 ```{r}
 #| echo: true
-(temp2 <- lm(1000/bmi ~ poly(fruit_day,2), data = train_c4im))
+(temp2 <- lm(1000/bmi ~ poly(fruit_c,2), data = train_c4im))
 ```
 
 This looks very different from our previous version of the model. What happens when we make a prediction, though?
 
 ## Prediction in the Orthogonal Polynomial Model
 
-Remember that in our raw polynomial model, our "by hand" and "using R" calculations each predicted `1000/bmi` for a subject with `fruit_day` = 2 to be 37.981.
+Remember that in our raw polynomial model, our "by hand" and "using R" calculations each predicted `1000/bmi` for a subject with `fruit_c` = 0.5 to be 37.91727.
 
 What happens with the orthogonal polynomial model `temp2`?
 
 ```{r}
 #| echo: true
-augment(temp2, newdata = data.frame(fruit_day = 2)) |> 
+augment(temp2, newdata = data.frame(fruit_c = 0.5)) |> 
   gt() |> tab_options(table.font.size = 20)
 ```
 
@@ -728,14 +744,14 @@ augment(temp2, newdata = data.frame(fruit_day = 2)) |>
 temp1_aug <- augment(temp1, train_c4im)
 temp2_aug <- augment(temp2, train_c4im)
 
-p1 <- ggplot(temp1_aug, aes(x = fruit_day, y = 1000/bmi)) +
+p1 <- ggplot(temp1_aug, aes(x = fruit_c, y = 1000/bmi)) +
     geom_point(alpha = 0.3) +
-    geom_line(aes(x = fruit_day, y = .fitted), col = "red", size = 2) +
+    geom_line(aes(x = fruit_c, y = .fitted), col = "red", size = 2) +
     labs(title = "temp1: Raw fit, degree 2")
 
-p2 <- ggplot(temp2_aug, aes(x = fruit_day, y = 1000/bmi)) +
+p2 <- ggplot(temp2_aug, aes(x = fruit_c, y = 1000/bmi)) +
     geom_point(alpha = 0.3) +
-    geom_line(aes(x = fruit_day, y = .fitted), col = "blue", size = 2) +
+    geom_line(aes(x = fruit_c, y = .fitted), col = "blue", size = 2) +
     labs(title = "temp2: Orthogonal fit, degree 2")
 
 p1 + p2 + 
@@ -766,13 +782,13 @@ rms::vif(temp2)
 
 The tradeoff is that the raw polynomial is a lot easier to explain in terms of a single equation in the simplest case. 
 
-Actually, we'll usually avoid polynomials in our practical work, and instead use splines, which are more flexible and require less maintenance, but at the cost of pretty much requiring you to focus on visualizing their predictions rather than their equations. 
+Actually, we'll often use splines instead of polynomials, which are more flexible and require less maintenance, but at the cost of pretty much requiring you to focus on visualizing their predictions rather than their equations. We'll talk about splines next time.
 
 ## Adding a Second Order Polynomial
 
 ```{r}
 #| echo: true
-m3 <- lm(1000/bmi ~ poly(fruit_day,2) + exerany + health,
+m3 <- lm(1000/bmi ~ poly(fruit_c,2) + exerany + health,
           data = train_c4im)
 ```
 
@@ -816,7 +832,7 @@ par(mfrow = c(1,2)); plot(m3, which = c(3,5))
 
 ```{r}
 #| echo: true
-m3int <- lm(1000/bmi ~ poly(fruit_day,2) + exerany * health,
+m3int <- lm(1000/bmi ~ poly(fruit_c,2) + exerany * health,
           data = train_c4im)
 ```
 
@@ -907,7 +923,7 @@ testing_mae <- bind_rows(
 bind_cols(testing_r2 |> select(mod, rsquare = .estimate), 
           testing_rmse |> select(rmse = .estimate),
           testing_mae |> select(mae = .estimate)) |> 
-  mutate(elements = c("exerany + health", "add fruit", "add polynomial", "m1 + interaction", "m2 + interaction", "m3 + interaction")) |>
+  mutate(elements = c("exerany + health", "add fruit_c", "add polynomial", "m1 + interaction", "m2 + interaction", "m3 + interaction")) |>
   gt() |> fmt_number(columns = rsquare:mae, decimals = 4) |>
   tab_options(table.font.size = 20)
 ```
@@ -918,7 +934,7 @@ bind_cols(testing_r2 |> select(mod, rsquare = .estimate),
 
 - Fitting splines, as well as polynomial terms.
 - Using the `ols` function from the **rms** package to fit linear regression models with non-linear terms.
-- Be sure to submit [Lab 2](https://thomaselove.github.io/432-2024/lab2.html) to Canvas by Tuesday 2024-01-30 at Noon.
+- Submit [Lab 2](https://thomaselove.github.io/432-2024/lab2.html) to Canvas by Tuesday 2024-01-30 at Noon.
 
 # Appendix
 
