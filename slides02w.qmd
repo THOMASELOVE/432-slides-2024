@@ -1,0 +1,487 @@
+---
+title: "432 Class 02"
+author: "https://thomaselove.github.io/432-2024/"
+date: "2024-01-18"
+format: docx
+---
+
+## Today's Agenda
+
+1.  Comparing Means
+2.  Comparing Rates
+3.  Fitting Linear Models
+4.  Setting Up Lab 1, due Tuesday 2024-01-23 at Noon.
+
+Course Notes: most relevant material in Chapters 1-5.
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+knitr::opts_chunk$set(comment = NA)
+
+library(broom) # for tidy, glance and augment
+library(car) # for boxCox and vif
+library(Epi) # for twoby2
+library(GGally) # for ggpairs
+library(MKinfer) # for boot.t.test
+library(mosaic) # for favstats
+library(naniar) # deal with missing values
+library(nhanesA) # source of data
+library(vcd) # for mosaic (plot) and assoc (plot)
+library(janitor) # for tabyl and other things
+library(tidyverse) # for all kinds of things
+
+theme_set(theme_bw())
+```
+
+# Building an NHANES Data Set (see Course Notes Chapters 1-2)
+
+## 2017 - March 2020 NHANES Data {.smaller}
+
+1982 NHANES subjects ages 26-42 with complete data on these 9 variables:
+
+Variable | Source | Description
+-------- | ------ | ----------------------------------
+SEQN | P-DEMO | Subject ID: Link (also in BPXO and HUQ)
+age | P_DEMO | RIDAGEYR (restricted to ages 26-42 here)
+educ | P_DEMO | DMDEDUC2 (five-category factor)
+sbp1 | BPXO | BPXOSY1 = 1st Systolic BP reading, in mm Hg
+sbp2 | BPXO | BPXOSY2 = 2nd Systolic BP reading
+sbp3 | BPXO | BPXOSY3 = 3rd Systolic BP reading
+sroh | HUQ | HUQ010 = five-categories E, VG, G, F, P
+hospital | HUQ | HUQ071 = Yes or No
+mentalh | HUQ | HUQ090 = Yes or No
+
+## Building the Data (using nhanesA)
+
+```{r}
+#| echo: true
+p_demo <- nhanes('P_DEMO') |>
+  select(SEQN, RIDAGEYR, DMDEDUC2)
+
+p_bpxo <- nhanes('P_BPXO') |>
+  select(SEQN, BPXOSY1, BPXOSY2, BPXOSY3)
+
+p_huq <- nhanes('P_HUQ') |>
+  select(SEQN, HUQ010, HUQ071, HUQ090)
+
+df_list <- list(p_demo, p_bpxo, p_huq)
+
+nh_raw <- df_list |>
+  reduce(left_join, by = 'SEQN') |>
+  drop_na() |>
+  filter(RIDAGEYR >= 26 & RIDAGEYR <= 42) |>
+  as_tibble()
+```
+
+## Renaming and Cleaning Variables
+
+```{r}
+#| echo: true
+nh1982 <- nh_raw |>
+  rename(age = RIDAGEYR, educ = DMDEDUC2, 
+         sbp1 = BPXOSY1, sbp2 = BPXOSY2, 
+         sbp3 = BPXOSY3, sroh = HUQ010, 
+         hospital = HUQ071, mentalh = HUQ090) |>
+  replace_with_na_at(
+    .vars = c("educ", "sroh", "hospital", "mentalh"), 
+    condition = ~ .x %in% c("Refused", "Don't know")) |>
+  mutate(educ = fct_recode(educ, 
+             "Less than 9th Grade" = "Less than 9th grade",
+             "9th - 11th Grade" = "9-11th grade (Includes 12th grade with no diploma)",
+             "High School Grad" = "High school graduate/GED or equivalent",
+             "Some College/AA" = "Some college or AA degree",
+             "College Grad" = "College graduate or above"),
+         sroh = fct_recode(sroh,
+                "Excellent" = "Excellent,",
+                "Very Good" = "Very good,",
+                "Good" = "Good,",
+                "Fair" = "Fair, or",
+                "Poor" = "Poor?")) |>
+  mutate(mean_sbp = (sbp1 + sbp2 + sbp3)/3,
+         SEQN = as.character(SEQN)) |>
+  drop_na() |> 
+  droplevels()
+
+write_rds(nh1982, "c02/data/nh1982.Rds")
+```
+
+## `nh1982`
+
+```{r}
+#| echo: true
+glimpse(nh1982)
+```
+
+## Codebook (excerpt, without SEQN)
+
+| Variable | Description (n = 1982)                                                                              |
+|------------:|:----------------------------------------------------------|
+|      age | Age in years (range 26-42, mean = 34)    |
+|  meansbp | Mean SBP in mm Hg (range: 76 to 209, mean 116) |
+| hospital | Yes if hospitalized in last 12m, else No (8% Yes) |
+|  mentalh | Yes if saw a mental health professional in last 12m, else No (12% Yes) |
+|     sroh | Self-reported Overall Health (see next slide) |
+|     educ | Educational Attainment (see next slide) |
+
+## SROH and Educational Attainment
+
+```{r}
+#| echo: true
+nh1982 |> tabyl(sroh) |> adorn_pct_formatting()
+nh1982 |> tabyl(educ) |> adorn_pct_formatting()
+
+```
+
+## Ingesting the Data (from .Rds)
+
+If you don't want to work through the nhanesA import and tidying, you can simply work with the nh1982.Rds file provided on our 432-data page.
+
+```{r}
+#| echo: true
+#| eval: false
+nh1982 <- read_rds("c02/data/nh1982.Rds")
+
+## not run here...
+```
+
+# Comparing Means (see Course Notes Chapter 3)
+
+## Paired or Independent Samples?
+
+In Analysis 1, we will compare the means of SBP1 and SBP2 for our 1982 participants.
+
+In Analysis 2, we will compare the mean of SBP3 between our 159 participants who were hospitalized and the 1823 who were not?
+
+Which of these analyses uses paired samples, and why?
+
+## Paired Samples Analysis
+
+```{r}
+#| echo: true
+
+nh1982 <- nh1982 |> mutate(SBP_diff = sbp1 - sbp2)
+
+favstats(~ SBP_diff, data = nh1982)
+```
+
+```{r}
+#| echo: true
+#| eval: false
+
+ggplot(nh1982, aes(sample = SBP_diff)) +
+  geom_qq() + geom_qq_line(col = "red") +
+  labs(title = "Normal Q-Q plot",
+       subtitle = "SBP1 - SBP2 Differences",
+       x = "Standard Normal Distribution",
+       y = "Observed SBP1-SBP2 values")
+```
+
+## Paired SBP Differences
+
+```{r}
+#| echo: false
+#| eval: true
+#| fig-asp: 1
+
+nh1982 <- nh1982 |> mutate(SBP_diff = sbp1 - sbp2)
+
+ggplot(nh1982, aes(sample = SBP_diff)) +
+  geom_qq() + geom_qq_line(col = "red") +
+  labs(title = "Normal Q-Q plot",
+       subtitle = "SBP1 - SBP2 Differences",
+       x = "Standard Normal Distribution",
+       y = "Observed SBP1-SBP2 values")
+```
+
+## Comparing Paired Samples
+
+Want a 90% confidence interval for the true mean of the paired SBP1 - SBP2 differences:
+
+-   t-based approach (same as linear model) assumes Normality
+-   Wilcoxon signed rank approach doesn't assume Normality but makes inferences about the pseudo-median
+-   bootstrap doesn't assume Normality, and describes mean
+
+```{r}
+#| echo: true
+#| eval: false
+
+set.seed(20240118)
+boot.t.test(nh1982$SBP_diff, conf.level = 0.9, 
+            boot = TRUE, R = 999)
+```
+
+Results on the next slide...
+
+## Bootstrap for Mean of SBP1-SBP2 Differences
+
+```{r}
+#| echo: false
+#| eval: true
+
+set.seed(20240118)
+boot.t.test(nh1982$SBP_diff, conf.level = 0.9, 
+            boot = TRUE, R = 999)
+```
+
+## Comparing sbp3 by hospital: Independent Samples
+
+```{r}
+#| echo: true
+favstats(sbp3 ~ hospital, data = nh1982) |>
+  select(-missing) 
+```
+
+```{r}
+#| echo: true
+#| eval: false
+
+ggplot(nh1982, aes(x = factor(hospital), y = sbp3)) +
+  geom_violin(aes(fill = factor(hospital))) +
+  geom_boxplot(width = 0.3, notch = TRUE) +
+  guides(fill = "none") +
+  labs(title = "SBP (3rd reading) by Hospitalization")
+```
+
+## SBP (3rd reading) vs. Hospitalization
+
+```{r}
+#| echo: false
+#| eval: true
+#| fig-align: center
+
+ggplot(nh1982, aes(x = factor(hospital), y = sbp3)) +
+  geom_violin(aes(fill = factor(hospital))) +
+  geom_boxplot(width = 0.3, notch = TRUE) +
+  guides(fill = "none") +
+  labs(title = "SBP (3rd reading) by Hospitalization")
+```
+
+## Two Independent Samples, Comparing Means
+
+Want a 90% confidence interval for the difference in means of SBP3 for people who were hospitalized - those who were not.
+
+-   Pooled t-based approach (equivalent to linear model) assumes Normality and equal population variances
+-   Welch t-based approach assumes Normality only
+-   bootstrap assumes neither
+-   Wilcoxon-Mann-Whitney rank sum assumes neither, but assesses a difference in locations, not the mean
+
+## Pooled t test via linear model
+
+```{r}
+#| echo: true
+
+lm2 <- lm(sbp3 ~ hospital, data = nh1982)
+
+tidy(lm2, conf.int = TRUE, conf.level = 0.90) 
+
+glance(lm2) |> select(r.squared, sigma) 
+```
+
+# Comparing Rates (see Course Notes, Chapter 4)
+
+## A Two-by-Two Contingency Table
+
+```{r}
+#| echo: true
+
+nh1982 |> tabyl(mentalh, hospital) |> 
+  adorn_totals(where = c("row", "col")) |>
+  adorn_title()
+```
+
+## Standard Epidemiological Format
+
+```{r}
+#| echo: true
+
+nh1982 <- nh1982 |> 
+  mutate(mentalh_f = fct_recode(factor(mentalh), 
+                "Saw MHP" = "Yes", "No MHP" = "No"),
+         mentalh_f = fct_relevel(mentalh_f, 
+                "Saw MHP", "No MHP"),
+         hospital_f = fct_recode(factor(hospital), 
+                "Hosp." = "Yes", "No Hosp." = "No"),
+         hospital_f = fct_relevel(hospital_f, 
+                "Hosp.", "No Hosp."))
+
+nh1982 |> tabyl(mentalh_f, hospital_f)
+```
+
+## Two by Two Table Analysis
+
+```{r}
+#| echo: true
+twoby2(nh1982$mentalh_f, nh1982$hospital_f, conf.level = 0.90)
+```
+
+## A Larger Two-Way Table
+
+What is the association of Educational Attainment with Self-Reported Overall Health?
+
+```{r}
+#| echo: true
+
+nh1982 |> tabyl(educ, sroh) |> 
+  adorn_totals(where =c("row","col"))|> adorn_title()
+```
+
+## Our 5x5 Table, showing SROH Proportions
+
+```{r}
+#| echo: true
+nh1982 |> tabyl(educ, sroh) |> 
+  adorn_totals(where = c("row")) |>
+  adorn_percentages(denominator = "row") |> 
+  adorn_pct_formatting() |> adorn_title()
+```
+
+## Mosaic Plot for our 5x5 Table
+
+```{r}
+#| echo: true
+#| fig-height: 5
+mosaic(~ educ + sroh, data = nh1982, highlighting = "sroh")
+```
+
+## Pearson $\chi^2$ test for our 5x5 Table
+
+```{r}
+#| echo: true
+
+chisq.test(xtabs(~ educ + sroh, data = nh1982))
+```
+
+## Association Plot for our 5x5 Table
+
+```{r}
+#| echo: true
+#| fig-height: 5
+assoc(~ educ + sroh, data = nh1982)
+```
+
+# Fitting Linear Models (see Course Notes, Chapter 5)
+
+## We'll fit two models today
+
+1.  Predict mean SBP using Age alone.
+2.  Predict mean SBP (across three readings) using Age, Self-Reported Overall Health Status and Hospitalization Status.
+
+```{r}
+#| echo: true
+temp_mod1 <- lm(mean_sbp ~ age, data = nh1982)
+temp_mod2 <- lm(mean_sbp ~ age + sroh + hospital, 
+                data = nh1982)
+```
+
+Note that I'm not doing any predictive validation today (remember that I did that in Class 1), so I won't split the sample.
+
+## Box-Cox Plot to suggest potential outcome transformations
+
+```{r}
+#| echo: true
+#| fig-height: 4.5
+boxCox(temp_mod2)
+
+nh1982 <- nh1982 |> mutate(inv_sbp = 1000/mean_sbp)
+```
+
+## Scatterplot Matrix (from `ggpairs()`)
+
+```{r}
+#| echo: true
+#| fig-height: 4.5
+ggpairs(nh1982, columns = c(2, 7, 8, 14), switch = "both",
+        lower=list(combo=wrap("facethist", bins=20)))
+```
+
+## Checking Collinearity: Variance Inflation Factors
+
+```{r}
+#| echo: true
+vif(lm(inv_sbp ~ age + sroh + hospital, data = nh1982))
+```
+
+## Tidied Coefficients for Model `m1`
+
+```{r}
+#| echo: true
+
+m1 <- lm(inv_sbp ~ age, data = nh1982)
+
+tidy(m1, conf.int = TRUE, conf.level = 0.9)
+```
+
+## Tidied Coefficients for Model `m2`
+
+```{r}
+#| echo: true
+
+m2 <- lm(inv_sbp ~ age + sroh + hospital, data = nh1982)
+
+tidy(m2, conf.int = TRUE, conf.level = 0.9)
+```
+
+## Fit Summaries for Models `m1` and `m2`
+
+```{r}
+#| echo: true
+bind_rows(glance(m1), glance(m2)) |>
+  mutate(model = c("m1", "m2")) |> 
+  select(model, r2 = r.squared, adjr2 = adj.r.squared, 
+         sigma, AIC, BIC, nobs, df, df.residual) 
+```
+
+Which model appears to fit the data better?
+
+## Residual Plots for Model `m2`
+
+```{r}
+par(mfrow = c(2,2)); plot(m2); par(mfrow = c(1,1))
+```
+
+## Making a Prediction in New Data
+
+Suppose a new person is age 29, was not hospitalized, and their SROH is "Good". What is their predicted mean systolic blood pressure?
+
+-   Our models predict 1000/mean_sbp and augment places that prediction into `.fitted`.
+-   To invert, divide `.fitted` by 1000, then take the reciprocal of that result. That's just 1000/`.fitted`.
+
+## Making a Prediction in New Data
+
+```{r}
+#| echo: true
+new_person <- tibble(age = 29, sroh = "Good", hospital = "No")
+bind_rows(augment(m1, newdata = new_person), 
+          augment(m2, newdata = new_person)) |>
+  mutate(model = c("m1", "m2"), fit_meansbp = 1000/.fitted) |>
+  select(model, fit_meansbp, .fitted, age, sroh, hospital) 
+```
+
+# Setting Up Lab 1, due Tuesday 2024-01-23 at Noon
+
+## Lab 1 Question 1
+
+I provide some County Health Rankings data for Ohio's 88 counties. You create a visualization involving information from at least three different variables using R and Quarto.
+
+-   Include proper labels and a meaningful title.
+-   Include a caption (75 words or fewer) that highlights the key result.
+-   What is the question you are trying to answer with this visualization?
+
+There is a Quarto template for Lab 1, in addition to the data set.
+
+## Lab 1 Question 2
+
+Create a linear regression model to predict `obese_pct` as a function of `food_env` and `median_income` (all of these are quantitative variables.)
+
+a.  Specify and fit the model, interpret `food_env` coefficient.
+b.  Evaluate quality of model in terms of adherence to regression assumptions via four key residual plots.
+c.  Build a nice table comparing your model to a simple regression for `obese_pct` using only `food_env`, and then reflect on your findings.
+
+## Next Week?
+
+-   Lab 1 due Tuesday Noon 
+    - Answer Sketch available Wednesday
+-   Developing Inferences Using Survey Weights
+-   Linear Regression and ANOVA/ANCOVA models

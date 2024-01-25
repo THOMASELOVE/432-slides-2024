@@ -1,0 +1,602 @@
+---
+title: "432 Class 03"
+author: "https://thomaselove.github.io/432-2024/"
+date: "2024-01-23"
+format: docx
+---
+
+## Today's Agenda
+
+Incorporating Survey Weights ...
+
+1. In estimating means and confidence intervals
+2. In building linear regression models
+3. Into a more detailed t-test approach using NHANES
+
+Primary Source: <https://bookdown.org/rwnahhas/RMPH/survey-design.html>
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+knitr::opts_chunk$set(comment = NA)
+
+library(broom)
+library(janitor) 
+library(gtsummary)
+library(gt)
+library(mosaic)
+
+library(nhanesA) # data source
+library(survey) # survey-specific tools
+
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+# Incorporating survey weights (an introduction)
+
+## What are survey weights?
+
+In many surveys, each sampled subject is assigned a weight that is equivalent to the reciprocal of his/her probability of selection into the sample.
+
+$$
+\mbox{Sample Subject's Weight} = \frac{1}{Prob(selection)}
+$$
+
+but more sophisticated sampling designs require more complex weighting schemes. Usually these are published as part of the survey data.
+
+I'll demonstrate part of the `survey` package today.
+
+## An NHANES Example
+
+Let's use the NHANES 2013-14 data and pull in both the demographics (`DEMO_H`) and total cholesterol (`TCHOL_H`) databases.
+
+```{r}
+#| echo: true
+demo_raw <- nhanes('DEMO_H', translated = FALSE)
+tchol_raw <- nhanes('TCHOL_H', translated = FALSE)
+```
+
+Detailed descriptions available at
+
+- <https://wwwn.cdc.gov/Nchs/Nhanes/2013-2014/DEMO_H.htm>
+- <https://wwwn.cdc.gov/Nchs/Nhanes/2013-2014/TCHOL_H.htm>
+
+## Weighting in NHANES {.smaller}
+
+Weights for each sampled person in NHANES account for the complex survey design. The weight describes the number of people in the population represented by the sampled person, and is created in three steps:
+
+1. the base weight is computed, which accounts for the unequal probabilities of selection given that some demographic groups were over-sampled;
+2. adjustments are made for non-response; and
+3. post-stratification adjustments are made to match estimates of the U.S. civilian non-institutionalized population available from the Census Bureau.
+
+Source: <https://wwwn.cdc.gov/nchs/nhanes/tutorials/Module3.aspx>
+
+
+## Weights in our NHANES data
+
+The `DEMO` file contains two kinds of sampling weights:
+
+- the interview weight (`WTINT2yr`), and
+- the MEC exam weight (`WTMEC2yr`)
+
+NHANES also provides several weights for subsamples. In NHANES, we identify the variable of interest that was collected on the smallest number of respondents. The sample weight that applies to that variable is the appropriate one to use. In our first case, we will study total cholesterol and use the weights from the MEC exam.
+
+## What Variables Do We Need? {.smaller}
+
+- `SEQN` = subject identifying code
+- `RIAGENDR` = sex (1 = M, 2 = F)
+- `RIDAGEYR` = age (in years at screening, topcode at 80)
+- `DMQMILIZ` = served active duty in US Armed Forces (yes/no)
+- `RIDSTATR` = 2 if subject took both interview and MEC exam
+- `WTMEC2YR` - Full sample 2 year MEC exam weight
+- `LBXTC` = Total Cholesterol (mg/dl) - this is our outcome
+
+The first 5 are in `DEMO_H`, and the first and last are in `TCHOL_H`.
+
+## Merge the `DEMO` and `TCHOL` files
+
+```{r}
+#| echo: true
+
+dim(demo_raw)
+dim(tchol_raw)
+
+joined_df <- inner_join(demo_raw, tchol_raw, by = c("SEQN"))
+
+dim(joined_df)
+```
+
+## Create a small analytic tibble
+
+```{r}
+#| echo: true
+
+nh1314 <- joined_df |> # has n = 8291
+    tibble() |>
+    filter(complete.cases(LBXTC)) |> # now n = 7624
+    filter(RIDSTATR == 2) |> # still 7624
+    filter(RIDAGEYR > 19 & RIDAGEYR < 40) |> # now n = 1802
+    filter(DMQMILIZ < 3) |> # drop 7 = refused, n = 1801
+    mutate(FEMALE = RIAGENDR - 1,
+           AGE = RIDAGEYR,
+           US_MIL = ifelse(DMQMILIZ == 1, 1, 0),
+           WT_EX = WTMEC2YR,
+           TOTCHOL = LBXTC) |>
+    select(SEQN, FEMALE, AGE, TOTCHOL, US_MIL, WT_EX)
+```
+
+## `nh1314` analytic sample
+
+```{r}
+#| echo: TRUE
+
+nh1314 |> select(AGE, TOTCHOL, WT_EX) |> summary()
+
+nh1314 |> tabyl(FEMALE, US_MIL) |> 
+  adorn_totals(where = c("row", "col")) |> adorn_title()
+```
+
+## Formatting `df_stats` with `gt()`
+
+```{r}
+#| echo: true
+df_stats(~ AGE + TOTCHOL, data = nh1314) |>
+  mutate(across(mean:sd, ~ round_half_up(.x, 2))) |> 
+  gt() |> tab_options(table.font.size = 20) |>
+  tab_header(title = "Approach A", 
+             subtitle = "Data from nh1314 sample, unadjusted")
+```
+
+## Formatting `df_stats` with `gt()`
+
+```{r}
+#| echo: true
+df_stats(~ AGE + TOTCHOL, data = nh1314) |>
+  gt() |> fmt_number(columns = mean:sd, decimals = 2) |>
+  tab_options(table.font.size = 20) |>
+  tab_header(title = "Approach B", 
+             subtitle = "Data from nh1314 sample, unadjusted")
+```
+
+## Our `nh1314` analytic sample: Weights
+
+Each weight represents the number of people exemplified by that subject.
+
+```{r}
+#| echo: true
+favstats(~ WT_EX, data = nh1314) |>
+  rename(na = missing) |> gt() |>
+  tab_options(table.font.size = 20)
+```
+
+## Using `gtsummary()` to describe `nh1314` (unweighted)
+
+```{r}
+#| echo: true
+
+table1 <- nh1314 |>
+  tbl_summary(include = -SEQN)
+
+table1
+```
+
+See <https://www.danieldsjoberg.com/gtsummary/> for more options.
+
+## Create `nh_design` survey design
+
+```{r}
+#| echo: true
+nh_design <- 
+    svydesign(
+        id = ~ SEQN,
+        weights = ~ WT_EX,
+        data = nh1314) 
+
+nh_design <- update( nh_design, one = 1) 
+
+## this one = 1 business will help us count
+
+nh_design
+```
+
+## Unweighted Counts
+
+### Overall
+
+```{r}
+#| echo: true
+
+sum(weights(nh_design, "sampling") != 0)
+```
+
+### By Groups
+
+```{r}
+#| echo: true
+svyby( ~ one, ~ FEMALE, nh_design, unwtd.count)
+svyby( ~ one, ~ FEMALE + US_MIL, nh_design, unwtd.count)
+```
+
+## Weighted Counts
+
+```{r}
+#| echo: true
+
+svytotal( ~ one, nh_design )
+```
+
+### By Groups
+
+```{r}
+#| echo: true
+
+svyby( ~ one, ~ FEMALE, nh_design, svytotal)
+svyby( ~ one, ~ FEMALE * US_MIL, nh_design, svytotal)
+```
+
+## Use survey design for weighted means
+
+What is the mean of total cholesterol, overall and in groups?
+
+```{r}
+#| echo: true
+
+svymean( ~ TOTCHOL, nh_design, na.rm = TRUE)
+
+svyby(~ TOTCHOL, ~ FEMALE, nh_design, svymean, na.rm = TRUE)
+
+svyby(~ TOTCHOL, ~ FEMALE + US_MIL, nh_design, svymean, na.rm = TRUE)
+```
+
+## Unweighted Summaries of TOTCHOL
+
+```{r}
+#| echo: true
+
+favstats(~ TOTCHOL, data = nh1314) |> 
+  mutate(se = sd / sqrt(n)) |>
+  gt() |> fmt_number(columns = c(mean, sd, se), decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+
+nh1314 |> group_by(FEMALE, US_MIL) |>
+  summarise(n = n(), mean = mean(TOTCHOL), se = sd(TOTCHOL)/sqrt(n)) 
+```
+
+
+## Survey-Weighted Measures of uncertainty
+
+Mean of total cholesterol within groups with 90% CI?
+
+```{r}
+#| echo: true
+
+grouped_result <- svyby(~ TOTCHOL, ~ FEMALE + US_MIL, 
+                        nh_design, svymean, na.rm = TRUE)
+coef(grouped_result)
+confint(grouped_result, level = 0.90)
+```
+
+- Get standard errors with `se(grouped_result)`, too.
+
+## Store estimated means in `res`
+
+```{r}
+#| echo: true
+res <- tibble(
+  type = rep(c("Unweighted", "Survey-Weighted"),4),
+  female = c(rep("Female", 4), rep("Male", 4)),
+  us_mil = rep(c("Military", "Military", "Not Military", "Not Military"), 2),
+  MEAN = c(169.5, 164.1984, 179.71, 180.0248, 187.11, 186.6966, 182.22, 182.3569) )
+
+res |> gt()
+```
+
+## Estimated Means, plotted
+
+```{r}
+#| echo: true
+ggplot(res, aes(x = female, y = MEAN, col = type)) +
+  geom_point(size = 4) +
+  facet_wrap(~ us_mil)
+```
+
+# Building Models and Survey Weights
+
+## Modeling `TOTCHOL` in `nh1314`
+
+First, we'll ignore weighting, and fit a model with main effects of all three predictors (`mod1`), then a model (`mod2`) which incorporates an interaction of FEMALE and US_MIL.
+
+```{r}
+#| echo: true
+mod1 <- lm(TOTCHOL ~ AGE + FEMALE + US_MIL, data = nh1314)
+
+mod2 <- lm(TOTCHOL ~ AGE + FEMALE * US_MIL, data = nh1314)
+```
+
+The interaction term means that the effect of FEMALE on TOTCHOL depends on the US_MIL status.
+
+## `mod1`, unweighted
+
+```{r}
+#| echo: true
+tidy(mod1, conf.int = TRUE, conf.level = 0.90) |>
+  select(-statistic) |> gt() |> tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+glance(mod1) |> select(r2 = r.squared, adjr2 = adj.r.squared, AIC, BIC,
+    sigma, nobs, df) |> gt() |> tab_options(table.font.size = 20)
+```
+
+## `mod1` Residuals (plots 1, 2)
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod1, which = c(1,2))
+```
+
+## `mod1` Residuals (plots 3, 5)
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod1, which = c(3,5))
+```
+
+## `mod2`, unweighted
+
+```{r}
+#| echo: true
+tidy(mod2, conf.int = TRUE, conf.level = 0.90) |>
+  select(-statistic) |> gt() |> tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+glance(mod2) |> 
+  select(r2 = r.squared, adjr2 = adj.r.squared, AIC, BIC, sigma, 
+         nobs, df) |> gt() |> tab_options(table.font.size = 20)
+```
+
+## `mod2` Residuals (plots 1, 2)
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod2, which = c(1,2))
+```
+
+## `mod2` Residuals (plots 3, 5)
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod2, which = c(3,5))
+```
+
+
+## Survey-weighted models via `svyglm`
+
+Again, we'll run two models, first without and second with an interaction term between `FEMALE` and `US_MIL`.
+
+```{r}
+#| echo: true
+
+glm1_results <- svyglm(TOTCHOL ~ AGE + FEMALE + US_MIL, 
+    nh_design, family = gaussian())
+```
+
+```{r}
+#| echo: true
+
+glm2_results <- svyglm(TOTCHOL ~ AGE + FEMALE * US_MIL, 
+    nh_design, family = gaussian())
+```
+
+Gaussian family used to generate linear regressions here.
+
+## Weighted Model 1
+
+```{r}
+#| echo: true
+
+tidy(glm1_results, conf.int = TRUE, conf.level = 0.90) |>
+  select(-statistic) |> gt() |> tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+
+glance(glm1_results) |> select(nobs, AIC, BIC, everything()) |> 
+  gt() |> tab_options(table.font.size = 20)
+```
+
+## Weighted Model 2
+
+```{r}
+#| echo: true
+
+tidy(glm2_results, conf.int = TRUE, conf.level = 0.90) |>
+  select(-statistic) |> gt() |> tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+
+glance(glm2_results) |> select(nobs, AIC, BIC, everything()) |>
+  gt() |> tab_options(table.font.size = 20)
+```
+
+## Residuals for Model `glm1_results`
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(glm1_results, which = c(1,2))
+```
+
+## Residuals for Model `glm1_results`
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(glm1_results, which = c(3,5))
+```
+
+## Residuals for Model `glm2_res`
+
+```{r}
+par(mfrow = c(1,2)); plot(glm2_results, which = c(1,2))
+```
+
+## Residuals for Model `glm2_res`
+
+```{r}
+par(mfrow = c(1,2)); plot(glm2_results, which = c(3,5))
+```
+
+
+# A More Complete Weighted NHANES Analysis 
+
+## New Question, New Data
+
+Key Source: <https://wwwn.cdc.gov/nchs/data/tutorials/DB303_Fig1_R.R>
+
+Now, we are looking at the percentage of persons aged 20 and over with depression, by age and sex, in the US in 2013-2016. Pull in data using `nhanesA`...
+
+```{r}
+#| echo: true
+
+DEMO_H <- nhanes('DEMO_H', translated = FALSE) |> 
+  select(SEQN, RIAGENDR, RIDAGEYR, SDMVSTRA, SDMVPSU, WTMEC2YR)
+DEMO_I <- nhanes('DEMO_I', translated = FALSE) |>
+  select(SEQN, RIAGENDR, RIDAGEYR, SDMVSTRA, SDMVPSU, WTMEC2YR)
+DEMO <- bind_rows(DEMO_H, DEMO_I) 
+DPQ_H <- nhanes('DPQ_H', translated = FALSE) 
+DPQ_I <- nhanes('DPQ_I', translated = FALSE) 
+DPQ <- bind_rows(DPQ_H, DPQ_I) 
+```
+
+## Merge DEMO and DPQ files and create derived variables
+
+```{r}
+#| echo: true
+dat2 <- left_join(DEMO, DPQ, by = "SEQN") |> tibble() |>
+  # Set 7=Refused and 9=Don't Know To NA 
+  mutate(across(.cols = DPQ010:DPQ090, 
+                ~ ifelse(. >=7, NA, .))) %>%
+  mutate(one = 1,
+         PHQ9_score = rowSums(select(. , DPQ010:DPQ090)),
+         Depression = ifelse(PHQ9_score >= 10, 100, 0),
+         Sex = factor(RIAGENDR, labels = c("M", "F")),
+         Age_group = cut(RIDAGEYR, 
+            breaks = c(-Inf, 19, 39, 59, Inf),
+            labels = c("Under 20", "20-39", "40-59", "60+")),
+         WTMEC4YR = WTMEC2YR/2,
+         inAnalysis = (RIDAGEYR >= 20 & !is.na(PHQ9_score))) |>
+  select(-starts_with("DPQ"))
+```
+
+## Define Survey Design
+
+Here's the survey design for the overall data set:
+
+```{r}
+#| echo: true
+NH_des_all <- svydesign(data = dat2, id = ~ SDMVPSU, 
+  strata = ~ SDMVSTRA, weights = ~ WTMEC4YR, nest = TRUE)
+
+dim(NH_des_all)
+```
+
+Here's the survey design object for the subset of interest: adults aged 20 and over with a valid PHQ-9 depression score:
+
+```{r}
+#| echo: true
+
+NH_des_dat2 <- NH_des_all |> subset(inAnalysis)
+
+dim(NH_des_dat2)
+```
+
+## Define a function to call svymean and unweighted count
+
+```{r}
+#| echo: true
+
+ourSummary <- function(varformula, byformula, design){
+  # Get mean, stderr, and unweighted sample size
+  c <- svyby(varformula, byformula, design, unwtd.count ) 
+  p <- svyby(varformula, byformula, design, svymean ) 
+  outSum <- left_join(select(c,-se), p) 
+  outSum
+}
+```
+
+### Estimate overall prevalence of depression
+
+```{r}
+#| echo: true
+ourSummary(~ Depression, ~ one, NH_des_dat2)
+```
+
+## Estimate prevalence of depression in various strata
+
+```{r}
+#| echo: true
+
+## By sex
+ourSummary(~ Depression, ~ Sex, NH_des_dat2)
+## By age
+ourSummary(~ Depression, ~ Age_group, NH_des_dat2)
+```
+
+## Estimate prevalence of depression by Age and Sex
+
+```{r}
+#| echo: true
+
+## By sex and age
+ourSummary(~ Depression, ~ Sex + Age_group, NH_des_dat2)
+```
+
+## Compare Prevalence between Male and Female
+
+Across all age groups:
+
+```{r}
+#| echo: true
+svyttest(Depression ~ Sex, NH_des_dat2)
+```
+
+## Compare Prevalence between Male and Female
+
+In people ages 40-59:
+
+```{r}
+#| echo: true
+svyttest(Depression ~ Sex, subset(NH_des_dat2, Age_group == "40-59"))
+```
+
+## Differences by Age Group, among Adults
+
+```{r}
+#| echo: true
+
+svyttest(Depression ~ Age_group, subset(NH_des_dat2, 
+                  Age_group=="20-39" | Age_group=="40-59"))
+```
+
+## Next Time?
+
+- Linear Regression and ANOVA / ANCOVA models
+- Incorporating Polynomials into our models
+
+### Reminders
+
+1. Please complete the **Minute Paper after Class 3** by noon tomorrow (Wednesday 2024-01-24)
+2. Get started on **Lab 2**, due next Tuesday 2024-01-30 at Noon.
+3. Continue reading **How To Be A Modern Scientist**
