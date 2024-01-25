@@ -1,22 +1,12 @@
 ---
 title: "432 Class 01"
-author: Thomas E. Love, Ph.D.
+author: "https://thomaselove.github.io/432-2024/"
 date: "2024-01-16"
-format:
-  revealjs: 
-    theme: default
-    embed-resources: true
-    self-contained: true
-    slide-number: true
-    footnotes-hover: true
-    preview-links: auto
-    date-format: iso
-    logo: 432-2024-pic.png
-    footer: "432 Class 01 | 2024-01-16 | <https://thomaselove.github.io/432-2024/>"
+format: 
   beamer:
-    date-format: iso
-    logo: 432-2024-pic.png
-    footer: "432 Class 01 | 2024-01-16 | <https://thomaselove.github.io/432-2024/>"
+    theme: Madrid
+    colortheme: lily
+    fig-align: center
 ---
 
 ## Getting To These Slides
