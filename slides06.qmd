@@ -22,6 +22,191 @@ format:
 - Using `aregImpute` to facilitate principled multiple imputation when fitting regressions
 - Developing detailed regression results under a variety of imputation plans
 
+
+# Data Spending: Non-Linearity Prior to Fits
+
+## Spending degrees of freedom wisely
+
+- Suppose we have a data set with many possible predictors, and minimal theory or subject matter knowledge to guide us.
+- We might want our final inferences to be as unbiased as possible. To accomplish this, we have to pay a penalty (in terms of degrees of freedom) for any "peeks" we make at the data in advance of fitting a model.
+- So that rules out a lot of decision-making about non-linearity based on looking at the data, if our sample size isn't much larger than 15 times the number of predictors we're considering including in our model.
+- In our case, we have n = 453 observations on 6 candidate predictors. 
+- In addition, adding non-linearity to our model costs additional degrees of freedom.
+- What can we do?
+
+
+## Spearman's $\rho^2$ plot: A smart first step?
+
+Spearman's $\rho^2$ is an indicator (not a perfect one) of potential predictive punch, but doesn't give away the game.
+
+- Idea: Perhaps we should focus our efforts re: non-linearity on predictors that score better on this measure.
+
+```{r}
+#| echo: true
+spear_cesd <- spearman2(cesd ~ mcs + subst + pcs + 
+                            age + sex + pss_fr, 
+                        data = helpdat)
+```
+
+## Spearman's $\rho^2$ Plot
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(spear_cesd)
+```
+
+## Conclusions from Spearman $\rho^2$ Plot
+
+- `mcs` is the most attractive candidate for a non-linear term, as it packs the most potential predictive punch, so if it does turn out to need non-linear terms, our degrees of freedom will be well spent. 
+    + This **does not** mean that `mcs` actually needs a non-linear term, or will show meaningfully better results if a non-linear term is included. We'd have to fit a model with and without non-linearity in `mcs` to know that.
+    + Non-linearity will often take the form of a product term, a polynomial term, or a restricted cubic spline.
+- `pcs`, also quantitative, has the next most potential predictive punch
+- these are followed by `pss_fr` and `sex`.
+
+## Grim Reality
+
+With 453 observations (452 df) we should be thinking about models with modest numbers of regression inputs. 
+
+- Non-linear terms (polynomials, splines) just add to the problem, as they need additional df to be estimated.
+
+In this case, we might choose to include non-linear terms in just two or three variables (and that's it) and even that would be tough to justify with this modest sample size.
+
+## Contents of `spear_cesd`
+
+```{r}
+#| echo: true
+spear_cesd
+```
+
+## Proposed New Model
+
+Fit a model to predict `cesd` using:
+
+- a 5-knot spline on `mcs`
+- a 3-knot spline on `pcs`
+- a linear term on `pss_fr`
+- a linear term on `age`
+- an interaction of `sex` with the main effect of `mcs` (restricting our model so that terms that are non-linear in both `sex` and `mcs` are excluded), and
+- a main effect of `subst`
+
+Perhaps more than we can reasonably do with 453 observations, but let's see how it looks.
+
+## Our new model `mod2`
+
+```{r}
+#| echo: true
+dd <- datadist(helpdat)
+options(datadist = "dd")
+
+mod2 <- ols(cesd ~ rcs(mcs, 5) + rcs(pcs, 3) + sex + 
+                mcs %ia% sex + pss_fr + age + subst, 
+            data = helpdat, x = TRUE, y = TRUE)
+```
+
+- `%ia%` tells R to fit an interaction term with `sex` and the main effect of `mcs`.
+- We have to include `sex` as a main effect for the interaction term (%ia%) to work here.
+
+## Our new, more complex model `mod2`
+
+```{r}
+#| eval: false
+mod2
+```
+
+![]("c05/figures/fig11.png"){height=80%}
+
+## ANOVA for this model
+
+```{r}
+#| eval: false
+anova(mod2)
+```
+
+![]("c05/figures/fig12.png"){width=85%}
+
+- Remember that this ANOVA testing is sequential, other than the TOTALs.
+- We can also plot the ANOVA results, for example...
+
+## Plotting ANOVA results for `mod2`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(anova(mod2))
+```
+
+## Validation of Summary Statistics
+
+```{r}
+#| eval: false
+set.seed(432); validate(mod2)
+```
+
+![]("c05/figures/fig13.png"){width=100%}
+
+### `summary` results for `mod2`
+
+```{r}
+#| eval: false
+summary(mod2)
+```
+
+![]("c05/figures/fig14.png"){width=100%}
+
+## Plot of `summary` results for `mod2`
+
+```{r}
+#| echo: true
+#| fig-height: 6
+plot(summary(mod2))
+```
+
+## Nomogram for `mod2`
+
+```{r}
+#| echo: true
+#| fig-height: 6
+plot(nomogram(mod2))
+```
+
+## Seeing the impact of the modeling another way
+
+```{r}
+#| echo: true
+#| fig-height: 5
+ggplot(Predict(mod2))
+```
+
+## Residuals vs. Fitted Values to check assumptions
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(resid(mod2) ~ fitted(mod2))
+```
+
+## Checking the model's calibration
+
+```{r}
+#| echo: true
+#| fig-height: 5
+set.seed(432); plot(calibrate(mod2))
+```
+
+## Limitations of `lm` for fitting complex linear models
+
+We can certainly assess this big, complex model using `lm`, too:
+
+- with in-sample summary statistics like adjusted R^2^, AIC and BIC,
+- we can assess its assumptions with residual plots, and 
+- we can also compare out-of-sample predictive quality through cross-validation,
+
+But to really delve into the details of how well this complex model works, and to help plot what is actually being fit, we'll probably want to fit the model using `ols`. 
+
+- In Project A, we expect some results that are most easily obtained using `lm` and others that are most easily obtained using `ols`.
+
+
 ## Today's R Setup
 
 ```{r}
