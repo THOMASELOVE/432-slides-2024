@@ -145,46 +145,62 @@ p5 <- ggplot(sim_rcs5_aug, aes(x = x, y = y)) +
 (p0 + p3) / (p4 + p5)
 ```
 
+# Returning to the `c4_im` data
+
+## Load and Partition Data
+
+```{r}
+#| echo: true
+c4im <- read_rds("c04/data/c4im.Rds")
+
+c4im <- c4im |>
+  mutate(fruit_c = fruit_day - mean(fruit_day))
+
+set.seed(432)    ## for future replication
+c4im_split <- initial_split(c4im, prop = 3/4)
+train_c4im <- training(c4im_split)
+test_c4im <- testing(c4im_split)
+```
 
 ## Fitting Restricted Cubic Splines with `lm` and `rcs`
 
-For most applications, three to five knots strike a nice balance between complicating the model needlessly and fitting data pleasingly. Let's consider a restricted cubic spline model for `bmi` based on `fruit_day` again, but now with:
+For most applications, three to five knots strike a nice balance between complicating the model needlessly and fitting data pleasingly. Let's consider a restricted cubic spline model for `bmi` based on `fruit_c` again, but now with:
 
 - in `temp3`, 3 knots, and
 - in `temp4`, 4 knots,
 
 ```{r}
 #| echo: true
-temp3 <- lm(bmi ~ rcs(fruit_day, 3), data = train_c4im)
-temp4 <- lm(bmi ~ rcs(fruit_day, 4), data = train_c4im)
+temp3 <- lm(bmi ~ rcs(fruit_c, 3), data = train_c4im)
+temp4 <- lm(bmi ~ rcs(fruit_c, 4), data = train_c4im)
 ```
 
 
-## Spline models for `bmi` and `fruit_day`
+## Spline models for `bmi` and `fruit_c`
 
 ```{r}
 temp3_aug <- augment(temp3, train_c4im)
 temp4_aug <- augment(temp4, train_c4im)
 
-p1 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
+p1 <- ggplot(train_c4im, aes(x = fruit_c, y = bmi)) +
     geom_point(alpha = 0.5) +
     geom_smooth(method = "lm", col = "black", se = F) +
     labs(title = "Linear Fit") 
 
-p2 <- ggplot(train_c4im, aes(x = fruit_day, y = bmi)) +
+p2 <- ggplot(train_c4im, aes(x = fruit_c, y = bmi)) +
     geom_point(alpha = 0.5) +
     geom_smooth(method = "loess", col = "purple", se = F) +
     labs(title = "Loess Smooth") 
 
-p3 <- ggplot(temp3_aug, aes(x = fruit_day, y = bmi)) +
+p3 <- ggplot(temp3_aug, aes(x = fruit_c, y = bmi)) +
     geom_point(alpha = 0.5) +
-    geom_line(aes(x = fruit_day, y = .fitted), 
+    geom_line(aes(x = fruit_c, y = .fitted), 
               col = "blue", size = 1.25) +
     labs(title = "RCS, 3 knots") 
 
-p4 <- ggplot(temp4_aug, aes(x = fruit_day, y = bmi)) +
+p4 <- ggplot(temp4_aug, aes(x = fruit_c, y = bmi)) +
     geom_point(alpha = 0.5) +
-    geom_line(aes(x = fruit_day, y = .fitted), 
+    geom_line(aes(x = fruit_c, y = .fitted), 
               col = "red", size = 1.25) +
     labs(title = "RCS, 4 knots") 
 
@@ -195,10 +211,10 @@ p4 <- ggplot(temp4_aug, aes(x = fruit_day, y = bmi)) +
 
 ```{r}
 #| echo: true
-m_4 <- lm(bmi ~ rcs(fruit_day, 4) + exerany + health,
+m_4 <- lm(bmi ~ rcs(fruit_c, 4) + exerany + health,
           data = train_c4im)
 
-m_4int <- lm(bmi ~ rcs(fruit_day, 4) + exerany * health,
+m_4int <- lm(bmi ~ rcs(fruit_c, 4) + exerany * health,
           data = train_c4im)
 ```
 

@@ -71,13 +71,16 @@ c4im |> n_miss()
 identical(nrow(c4im), n_distinct(c4im$ID))
 ```
 
-## Our covariate, `fruit_day`
+## Our covariate, `fruit_day` {.smaller}
 
 Our main interest is in the factors `exerany` and `genhealth`.
 
-Later, we'll adjust for the (quantitative) covariate `fruit_day`. Here, we'll be including the covariate to help account for some nuisance variation, rather than being deeply interested in the impact of `fruit_day` on `bmi`. A common approach, then, is centering the predictor prior to including it.
+Later, we'll adjust for the (quantitative) covariate `fruit_day`. Here, we'll be including the covariate to help account for some nuisance variation, rather than being deeply interested in the impact of `fruit_day` on `bmi`. 
+
+A common approach, then, is centering the predictor (subtracting its mean) prior to including it.
 
 ```{r}
+#| echo: true
 c4im <- c4im |>
   mutate(fruit_c = fruit_day - mean(fruit_day))
 
