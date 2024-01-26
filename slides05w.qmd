@@ -1,0 +1,980 @@
+---
+title: "432 Class 05"
+author: "https://thomaselove.github.io/432-2024/"
+date: "2024-01-30"
+format: docx
+---
+
+## Today's Agenda {.smaller}
+
+- The HELP study (today's main data) and preliminaries
+- Using `ols` to fit a linear model
+    - Obtaining coefficients and basic summaries, ANOVA in `ols`
+    - Validating summary statistics like $R^2$
+    - Plot Effects with `summary` and `Predict`
+    - Building and using a nomogram
+    - Evaluating Calibration 
+    - Influential points and `dfbeta`
+- Building Non-Linear Predictors in `ols` 
+    + Polynomial Functions
+    + Restricted Cubic Splines
+- Appendix: Additional Spline Examples
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(mosaic)            ## auto-loads mosaicData
+library(janitor)
+library(gt)
+library(broom)
+library(rsample)
+library(yardstick)
+library(patchwork)
+library(GGally)            ## for scatterplot matrix
+library(rms)               ## auto-loads Hmisc
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+
+# Data from the HELP study
+
+## New Data (`helpdat`: HELP study)
+
+Today's main data set comes from the Health Evaluation and Linkage to Primary Care trial, and is stored as `HELPrct` in the `mosaicData` package. 
+
+HELP was a clinical trial of adult inpatients recruited from a detoxification unit. Patients with no primary care physician were randomized to receive a multidisciplinary assessment and a brief motivational intervention or usual care, with the goal of linking them to primary medical care. 
+
+## Key Variables for Today {.smaller}
+
+Variable | Description
+-----: | :----------------------------------------------
+`id` | subject identifier
+`cesd` | Center for Epidemiologic Studies Depression measure (higher scores indicate more depressive symptoms)
+`age` | subject age (in years)
+`sex` | female (n = 107) or male (n = 346)
+`subst` | primary substance of abuse (alcohol, cocaine or heroin)
+`mcs` | SF-36 Mental Component Score (lower = worse status)
+`pcs` | SF-36 Physical Component Score (lower = worse status)
+`pss_fr` | perceived social support by friends (higher = more support)
+
+- All measures from baseline during the subjects' detoxification stay.
+- More data and details at https://nhorton.people.amherst.edu/help/.
+
+## The `helpdat` data
+
+We will look at 453 subjects with complete data today.
+
+```{r}
+#| echo: true
+helpdat <- tibble(mosaicData::HELPrct) |>
+    select(id, cesd, age, sex, subst = substance,
+           mcs, pcs, pss_fr)
+
+df_stats(~ cesd + age + mcs + pcs + pss_fr, data = helpdat) |>
+  gt() |> fmt_number(min:sd, decimals = 2) |>
+  tab_options(table.font.size = 20)
+```
+
+
+## `helpdat` categorical variables
+
+```{r}
+#| echo: true
+
+helpdat |> tabyl(sex, subst) |> 
+    adorn_totals(where = c("row", "col")) |>
+    adorn_percentages(denominator = "row") |>
+    adorn_pct_formatting() |>
+    adorn_ns(position = "front") |>
+    adorn_title(placement = "combined") |>
+  gt() |> tab_options(table.font.size = 20)
+```
+
+## Our Outcome (CES-Depression score)
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+p1 <- ggplot(helpdat, aes(sample = cesd)) +
+  geom_qq(col = '#440154') + geom_qq_line(col = "red") + 
+  theme(aspect.ratio = 1) +
+    labs(y = "Sorted CES-D Scores", 
+         x = "Standard Normal Distribution")
+
+p2 <- ggplot(helpdat, aes(x = cesd)) +
+  geom_histogram(aes(y = stat(density)), 
+                 bins = 10, fill = '#440154', col = '#FDE725') +
+  stat_function(fun = dnorm, 
+                args = list(mean = mean(helpdat$cesd), 
+                            sd = sd(helpdat$cesd)),
+                col = "red", lwd = 1.5) +
+  labs(y = "Number of Subjects", x = "CES-D Score")
+
+p3 <- ggplot(helpdat, aes(x = cesd, y = "")) +
+  geom_violin(fill = '#440154') +
+  geom_boxplot(width = 0.3, col = '#FDE725', notch = TRUE, 
+               outlier.color = '#440154') +
+  labs(x = "CES-D Score", y = "")
+
+p1 + (p2 / p3 + plot_layout(heights = c(4,1))) +
+  plot_annotation(title = "CES-D Depression Scores from helpdat data",
+       subtitle = "Higher CES-D indicates more depressive symptoms",
+       caption = "n = 453, no missing data")
+```
+
+## Describing our outcome CES-D
+
+```{r}
+#| echo: true
+describe(helpdat$cesd)
+```
+
+- `Info` measures the variable's information between 0 and 1: the higher the `Info`, the more continuous the variable is (the fewer ties there are.)
+- `Gmd` = Gini's mean difference, a robust measure of variation. If you randomly selected two of the 453 subjects many times, the mean difference in `cesd` would be 14.23 points.
+
+## We have some labels in our data
+
+```{r}
+#| echo: true
+str(helpdat)
+```
+
+## Scatterplot Matrix (code)
+
+```{r}
+#| eval: false
+#| echo: true
+temp <- helpdat |>
+    select(age, mcs, pcs, pss_fr, sex, subst, cesd)
+
+ggpairs(temp)  ## ggpairs from the GGally package
+```
+
+We place the outcome (`cesd`) last (result on next slide.)
+
+### Saving the Data Set
+
+```{r}
+#| echo: true
+write_rds(helpdat, "c05/data/helpdat.Rds")
+```
+
+## Scatterplot Matrix (result)
+
+```{r}
+temp <- helpdat |>
+    select(age, mcs, pcs, pss_fr, sex, subst, cesd)
+
+ggpairs(temp)  ## ggpairs from the GGally package
+```
+
+# Using `ols` to fit a linear regression model
+
+## Fitting using `ols`
+
+The `ols` function stands for ordinary least squares and comes from the `rms` package, by Frank Harrell and colleagues. Any model fit with `lm` can also be fit with `ols`.
+
+- To predict `var_y` using `var_x` from the `my_tibble` data, we would use the following syntax:
+
+```{r}
+#| eval: false
+#| echo: true
+dd <- datadist(my_tibble)
+options(datadist = "dd")
+
+model_name <- ols(var_y ~ var_x, data = my_tibble,
+                  x = TRUE, y = TRUE)
+```
+
+This leaves a few questions...
+
+## What's the `datadist` stuff doing?
+
+Before fitting an `ols` model to data from `my_tibble`, use:
+
+```{r}
+#| echo: true
+#| eval: false
+dd <- datadist(my_tibble)
+options(datadist = "dd")
+```
+
+> Run (the datadist code above) once before any models are fitted, storing the distribution summaries for all potential variables. Adjustment values are 0 for binary variables, the most frequent category (or optionally the first category level) for categorical (factor) variables, the middle level for ordered factor variables, and medians for continuous variables. (excerpt from `datadist` documentation)
+
+## Why use `x = TRUE, y = TRUE`?
+
+Once we've set up the summaries with `datadist`, we fit a model:
+
+```{r}
+#| eval: false
+#| echo: true
+model_name <- ols(var_y ~ var_x, data = my_tibble,
+                  x = TRUE, y = TRUE)
+```
+
+- `ols` stores additional information beyond what `lm` does
+- `x = TRUE` and `y = TRUE` save even more expanded information for building plots and summarizing fit. 
+- The defaults are `x = FALSE, y = FALSE`, but in 432, we'll want them saved.
+
+## Using `ols` to fit a model
+
+Let's try to predict our outcome (`cesd`) using `mcs` and `subst`
+
+- Start with setting up the `datadist`
+- Then fit the model, including `x = TRUE, y = TRUE`
+
+```{r}
+#| echo: true
+
+dd <- datadist(helpdat)
+options(datadist = "dd")
+
+mod1 <- ols(cesd ~ mcs + subst, data = helpdat,
+                 x = TRUE, y = TRUE)
+```
+
+## Contents of `mod1`?
+
+```{r}
+#| echo: true
+
+mod1
+```
+
+## New elements in `ols`
+
+For our `mod1`,
+
+- Model Likelihood Ratio test output includes `LR chi2 = 295.10, d.f. = 3, Pr(> chi2) = 0.0000`
+
+The log of the likelihood ratio, multiplied by -2, yields a test against a $\chi^2$ distribution. Interpret this as a goodness-of-fit test that compares `mod1` to a null model with only an intercept term. In `ols` this is similar to a global (ANOVA) F test.
+
+## New elements in `ols`
+
+Under the $R^2$ values, we have `g = 9.827`.
+
+- This is the $g$-index, based on Gini's mean difference. If you randomly selected two of the subjects in the model, the average difference in predicted `cesd` will be 9.827. 
+- This can be compared to the Gini's mean difference for the original `cesd` values, from `describe`, which was `Gmd = 14.23`.
+
+## Validate summaries from an `ols` fit
+
+- Can we validate summary statistics by resampling? 
+
+```{r}
+#| echo: true
+set.seed(432)
+validate(mod1)
+```
+
+- The data used to fit the model provide an over-optimistic view of the quality of fit.
+- We're interested here in assessing how well the model might work in new data, using a resampling approach.
+
+## Interpreting Resampling Validation {.smaller}
+
+-- | index.orig | training | test | optimism | index.corrected | n
+---: | ---: | ---: | ---: | ---: | ---: | ---: 
+$R^2$ | 0.4787 | 0.4874 | 0.4737 | 0.0137 | 0.4650 | 40
+
+- `index.orig` for $R^2$ is 0.4787. That's what we get from the data used to fit `mod1`.
+- With `validate` we create 40 (by default) bootstrapped resamples of the data and then split each of those into training and test samples.
+    - For each of the 40 splits, R refits the model (same predictors) in the `training` sample to obtain $R^2$: mean across 40 splits is 0.4874
+    - Check each model in its `test` sample: average $R^2$ was 0.4737
+- `optimism` = `training` result - `test` result = 0.0137
+- `index.corrected` = `index.orig` - `optimism` = 0.4650
+
+While our *nominal* $R^2$ is 0.4787; correcting for optimism yields *validated* $R^2$ of 0.4650, so we conclude that $R^2$ = 0.4650 better estimates how `mod1` will perform in new data.
+
+## ANOVA for `mod1` fit by `ols` {.smaller}
+
+```{r}
+#| echo: true
+anova(mod1)
+```
+
+- This adds a line for the complete regression model (both terms) which can be helpful, but is otherwise the same as `anova()` after a fit using `lm()`.
+- As with `lm`, this is a sequential ANOVA table, so if we had included `subst` in the model first, we'd get a different SS, MS, F and p for `mcs` and `subst`, but the same `REGRESSION` and `ERROR` results.
+
+## summary for `mod1` fit by `ols` {.smaller}
+
+```{r}
+#| echo: true
+summary(mod1, conf.int = 0.90)
+```
+
+- How do we interpret the `subst` effects estimated by this model?
+    - Effect of `subst` being `cocaine` instead of `alcohol` on `ces_d` is `-3.44` assuming no change in `mcs`, with 90% CI (-5.10, -1.79).
+    - Effect of `subst` being `heroin` instead of `alcohol` on `ces_d` is `-1.78` assuming no change in `mcs`, with 90% CI (-3.54, -0.02).
+
+But what about the `mcs` effect?
+
+## summary for `mod1` fit by `ols` {.smaller}
+
+```{r}
+#| echo: true
+summary(mod1, conf.int = 0.90)
+```
+
+- Effect of `mcs`: `-12.66` is the estimated change in `cesd` associated with a move from `mcs` = 21.68 (see `Low` value) to `mcs` = 40.94 (the `High` value) assuming no change in `subst`.
+- `ols` chooses the `Low` and `High` values from the interquartile range.
+
+```{r}
+#| echo: true
+quantile(helpdat$mcs, c(0.25, 0.75))
+```
+
+## Plot the summary to see effect sizes {.smaller}
+
+- Goal: plot effect sizes for similar moves within predictor distributions.
+
+```{r}
+#| fig-height: 3
+#| echo: true
+plot(summary(mod1))
+```
+
+
+- The triangles indicate the point estimate, augmented with confidence interval bars.
+    - The 90% confidence intervals are plotted with the thickest bars.
+    - The 95% CIs are then shown with thinner, more transparent bars.
+    - Finally, the 99% CIs are shown as the longest, thinnest bars.
+
+## Plot the individual effects? {.smaller}
+
+```{r}
+#| fig-height: 3.5
+#| echo: true
+ggplot(Predict(mod1, conf.int = 0.95), layout = c(1,2))
+```
+
+- At left, impact of changing `mcs` on `cesd` holding `subst` at its baseline (alcohol).
+- At right, impact of changing `subst` on `cesd` holding `mcs` at its median (`r median(helpdat$mcs)`).
+- Defaults: add 95% CI bands and layout tries for a square.
+
+## Build a nomogram for the `ols` fit
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(nomogram(mod1))
+```
+
+## Nomograms {.smaller}
+
+For complex models (this model isn't actually very complex) it can be helpful to have a tool that will help you see the modeled effects in terms of their impact on the predicted outcome.
+
+A *nomogram* is an established graphical tool for doing this.
+
+- Find the value of each predictor on its provided line, and identify the "points" for that predictor by drawing a vertical line up to the "Points".
+- Then sum up the points over all predictors to obtain "Total Points".
+- Draw a vertical line down from the "Total Points" to the "Linear Predictor" to get the predicted `cesd` for this subject.
+
+## Using the nomogram for the `mod1` fit
+
+Predicted `cesd` if `mcs` = 35 and `subst` = heroin?
+
+```{r}
+#| fig-height: 6
+plot(nomogram(mod1))
+```
+
+## Actual Prediction for this subject...
+
+- The `predict` function for our `ols` fit provides fitted values.
+
+```{r}
+#| echo: true
+predict(mod1, newdata = tibble(mcs = 35, subst = "heroin"))
+```
+
+- The `broom` package can also support `rms` fits
+
+```{r}
+#| echo: true
+augment(mod1, newdata = tibble(mcs = 35, subst = "heroin"))
+```
+
+## Assessing the Calibration of `mod1`
+
+We would like our model to be well-calibrated, in the following sense...
+
+- Suppose our model assigns a predicted outcome of 6 to several subjects. If the model is well-calibrated, this means we expect the mean of those subjects' actual outcomes to be very close to 6.
+
+## Assessing the Calibration of `mod1`
+
+We'd like to look at the relationship between the observed `cesd` outcome and our predicted `cesd` from the model.
+
+- The calibration plot we'll create provides two estimates (with and without bias-correction) of the predicted vs. observed values of our outcome, and compares these to the ideal scenario (predicted = observed).
+- The plot uses resampling validation to produce bias-corrected estimates and uses lowess smooths to connect across predicted values.
+- Calibration plots require `x = TRUE, y = TRUE` in `ols`.
+
+## Calibration Plot for `mod1`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+
+set.seed(43299); plot(calibrate(mod1))
+```
+
+## Influential Points for `mod1`?
+
+The `dfbeta` value for a particular subject and coefficient $\beta$ is the change in the coefficient that happens when the subject is excluded from the model.
+
+```{r}
+#| echo: true
+which.influence(mod1, cutoff = 0.2)
+```
+
+- These are the subjects that have absolute values of `dfbetas` that exceed the specified cutoff (default is 0.2 but it's an arbitrary choice.)
+
+
+## Show influential points directly? {.smaller}
+
+```{r}
+#| echo: true
+w <- which.influence(mod1, cutoff = 0.2)
+d <- helpdat |> select(mcs, subst, cesd) |> data.frame()
+show.influence(w, d)
+```
+
+- Count = number of coefficients where this row appears influential.
+- Use `helpdat |> slice(351)` to see row 351 in its entirety.
+- Use residual plots (with an `lm` fit) to check Cook's distances.
+
+## Residuals vs. Fitted plot from `ols`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(resid(mod1) ~ fitted(mod1))
+```
+
+## Fitting all Residual Plots for `mod1`
+
+To fit more complete residual plots (and other things) we can fit the `lm` version of this same model...
+
+```{r}
+#| eval: false
+#| echo: true
+mod1_lm <- lm(cesd ~ mcs + subst, data = helpdat)
+
+par(mfrow = c(2,2)); plot(mod1_lm); par(mfrow = c(1,1))
+```
+
+- Plots are shown on the next two slides. While the subject in row 351 is more influential than most other points, it doesn't reach the standard of a problematic Cook's distance.
+
+## First Two `mod1_lm` Residual Plots
+
+```{r}
+mod1_lm <- lm(cesd ~ mcs + subst, data = helpdat)
+
+par(mfrow = c(1,2)); plot(mod1_lm, which = c(1,2))
+```
+
+
+## Second Two `mod1_lm` Residual Plots
+
+```{r}
+par(mfrow = c(1,2)); plot(mod1_lm, which = c(3,5))
+```
+
+
+# Non-Linear Terms: Polynomials
+
+## Non-Linear Terms
+
+In building a linear regression model, we're most often going to be thinking about:
+
+- for quantitative predictors, some curvature...
+    - perhaps polynomial terms 
+    - but more often restricted cubic splines
+- for any predictors, possible interactions
+    - between categorical predictors 
+    - between categorical and quantitative predictors
+    - between quantitative predictors
+
+## Polynomial Regression
+
+A polynomial regression involves a polynomial in the variable `x` of degree D (linear combination of powers of `x` up to D.)
+
+- Linear: $y = \beta_0 + \beta_1 x$
+- Quadratic: $y = \beta_0 + \beta_1 x + \beta_2 x^2$
+- Cubic: $y = \beta_0 + \beta_1 x + \beta_2 x^2 + \beta_3 x^3$
+- Quartic: $y = \beta_0 + \beta_1 x + \beta_2 x^2 + \beta_3 x^3 + \beta_4 x^4$
+
+An **orthogonal polynomial** sets up a model design matrix and then scales those columns so that each column is uncorrelated with the others.
+
+## Use `pcs` to predict `cesd`?
+
+- Let's look at both a linear fit and a loess smooth to see if they indicate meaningfully different things about the association between `pcs` and `cesd`
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(helpdat, aes(x = pcs, y = cesd)) + 
+    geom_point(size = 2) +
+    geom_smooth(method = "loess", formula = y ~ x, 
+                se = FALSE, col = "blue") +
+    geom_smooth(method = "lm", formula = y ~ x,
+                se = FALSE, col = "red") + 
+    labs(title = "Linear and Loess Fits for cesd vs. pcs")
+```
+
+## Polynomial regression with `ols`
+
+```{r}
+#| echo: true
+dd <- datadist(helpdat)
+options(datadist = "dd")
+
+mod_B1 <- ols(cesd ~ pcs, 
+              data = helpdat, x = TRUE, y = TRUE)
+mod_B2 <- ols(cesd ~ pol(pcs, 2), 
+              data = helpdat, x = TRUE, y = TRUE)
+mod_B3 <- ols(cesd ~ pol(pcs, 3),
+              data = helpdat, x = TRUE, y = TRUE)
+```
+
+- Note the use of `pol()` from the `rms` package here to fit orthogonal polynomials, rather than `poly()` which we used in an `lm` fit.
+
+## Model B1 (linear in `pcs`)
+
+```{r}
+#| echo: true
+mod_B1
+```
+
+## Model B2 (quadratic poly. in `pcs`)
+
+```{r}
+#| echo: true
+mod_B2
+```
+
+## Model B3 (cubic polynomial in `pcs`)
+
+```{r}
+#| echo: true
+mod_B3
+```
+
+## Store the polynomial fits
+
+First, we need to store the values. Since `broom` doesn't play well with `ols` fits, so I'll just add the predictions as columns
+
+```{r}
+#| echo: true
+cesd_fits <- helpdat |>
+    mutate(fitB1 = predict(mod_B1),
+           fitB2 = predict(mod_B2),
+           fitB3 = predict(mod_B3))
+```
+
+## Plot the polynomial fits
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(cesd_fits, aes(x = pcs, y = cesd)) +
+    geom_point() +
+    geom_line(aes(x = pcs, y = fitB1),
+              col = "blue", size = 1.25) +
+    geom_line(aes(x = pcs, y = fitB2),
+              col = "black", size = 1.25) +
+    geom_line(aes(x = pcs, y = fitB3),
+              col = "red", size = 1.25) +
+    geom_text(x = 18, y = 47, label = "Linear Fit", 
+              size = 5, col = "blue") +
+    geom_text(x = 18, y = 39, label = "Quadratic Fit", 
+              size = 5, col = "black") +
+    geom_text(x = 18, y = 26, label = "Cubic Fit", 
+              size = 5, col = "red") +
+    labs(title = "Linear, Quadratic and Cubic Fits for cesd using pcs") 
+```
+
+## Plot polynomial fits with `Predict()`
+
+```{r}
+#| echo: true
+p1 <- ggplot(Predict(mod_B1)) + ggtitle("B1: Linear")
+p2 <- ggplot(Predict(mod_B2)) + ggtitle("B2: Quadratic")
+p3 <- ggplot(Predict(mod_B3)) + ggtitle("B3. Cubic")
+
+p1 + p2 + p3
+```
+
+# Non-Linear Terms: Splines
+
+## Types of Splines
+
+- A **linear spline** is a continuous function formed by connecting points (called **knots** of the spline) by line segments.
+- A **restricted cubic spline** is a way to build highly complicated curves into a regression equation in a fairly easily structured way.
+- A restricted cubic spline is a series of polynomial functions joined together at the knots. 
+    + Such a spline gives us a way to flexibly account for non-linearity without over-fitting the model.
+
+## How complex should our spline be?
+
+Restricted cubic splines can fit many different types of non-linearities. Specifying the number of knots is all you need to do in R to get a reasonable result from a restricted cubic spline. 
+
+The most common choices are 3, 4, or 5 knots. 
+
+- 3 Knots, 2 degrees of freedom, allows the curve to "bend" once.
+- 4 Knots, 3 degrees of freedom, lets the curve "bend" twice.
+- 5 Knots, 4 degrees of freedom, lets the curve "bend" three times. 
+
+## Restricted Cubic Splines with `ols`
+
+Let's consider a restricted cubic spline model for `cesd` based on `pcs` with:
+
+- 3 knots in `modC3`, 4 knots in `modC4`, and 5 knots in `modC5`
+
+```{r}
+#| echo: true
+dd <- datadist(helpdat)
+options(datadist = "dd")
+
+mod_C3 <- ols(cesd ~ rcs(pcs, 3), 
+              data = helpdat, x = TRUE, y = TRUE)
+mod_C4 <- ols(cesd ~ rcs(pcs, 4), 
+              data = helpdat, x = TRUE, y = TRUE)
+mod_C5 <- ols(cesd ~ rcs(pcs, 5),
+              data = helpdat, x = TRUE, y = TRUE)
+```
+
+## Model C3 (3-knot spline in `pcs`)
+
+```{r}
+#| echo: true
+mod_C3
+```
+
+## Model C4 (4-knot spline in `pcs`)
+
+```{r}
+#| echo: true
+mod_C4
+```
+
+## Model C5 (5-knot spline in `pcs`)
+
+```{r}
+#| echo: true
+mod_C5
+```
+
+## Plot all six fits?
+
+```{r}
+#| echo: true
+#| output-location: slide
+p1 <- ggplot(Predict(mod_B1)) + ggtitle("B1: Linear")
+p2 <- ggplot(Predict(mod_B2)) + ggtitle("B2: Quadratic")
+p3 <- ggplot(Predict(mod_B3)) + ggtitle("B3. Cubic")
+p4 <- ggplot(Predict(mod_C3)) + ggtitle("C3: 3-knot RCS")
+p5 <- ggplot(Predict(mod_C4)) + ggtitle("C4. 4-knot RCS")
+p6 <- ggplot(Predict(mod_C5)) + ggtitle("C5. 5-knot RCS")
+
+(p1 + p2 + p3) / (p4 + p5 + p6)
+```
+
+## Which of these models looks better? {.smaller}
+
+- I used `set.seed(432)` then `validate(mod_B1)` etc.
+
+Model | Index-Corrected $R^2$ | Corrected MSE
+:-----: | :-----: | :-----:
+B1 (linear) | 0.0848 | 143.25
+B2 (quadratic) | 0.0752 | 142.49
+B3 (cubic) | 0.0909 | 143.73
+C3 (3-knot RCS) | 0.0732 | 143.31
+C4 (4-knot RCS) | 0.0870 | 144.00
+C5 (5-knot RCS) | 0.0984 | 141.44
+
+- We'd need to look at residual plots, too.
+
+## Next Time
+
+- Determining how to spend degrees of freedom on non-linearity
+- The HERS data
+- Fitting a more complex linear regression model
+- Adding missing data into all of this, and using multiple imputation
+
+# Appendix: On Splines
+
+## How complex should our spline be?
+
+Restricted cubic splines can fit many different types of non-linearities. Specifying the number of knots is all you need to do in R to get a reasonable result from a restricted cubic spline. 
+
+The most common choices are 3, 4, or 5 knots. 
+
+- 3 Knots, 2 degrees of freedom, allows the curve to "bend" once.
+- 4 Knots, 3 degrees of freedom, lets the curve "bend" twice.
+- 5 Knots, 4 degrees of freedom, lets the curve "bend" three times. 
+
+## A simulated data set
+
+```{r}
+#| echo: true
+set.seed(4322024)
+
+sim_data <- tibble(
+    x = runif(250, min = 10, max = 50),
+    y = 3*(x-30) - 0.3*(x-30)^2 + 0.05*(x-30)^3 + 
+        rnorm(250, mean = 500, sd = 70)
+)
+
+head(sim_data)
+```
+
+## The `sim_data`, plotted.
+
+```{r}
+p1 <- ggplot(sim_data, aes(x = x, y = y)) + 
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "lm", col = "red", se = FALSE) +
+    labs(title = "With Linear Fit")
+
+p2 <- ggplot(sim_data, aes(x = x, y = y)) + 
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "loess", col = "blue", se = FALSE) +
+    labs(title = "With Loess Smooth")
+
+p1 + p2
+```
+
+
+## Fitting Non-Linear Terms with `lm`
+
+We'll fit:
+
+- a linear model
+- two models using orthogonal polynomials (`poly()`), and 
+- three models using restricted cubic splines (`rcs()`)
+
+```{r}
+#| echo: true
+sim_linear <- lm(y ~ x, data = sim_data)
+sim_poly2  <- lm(y ~ poly(x, 2), data = sim_data)
+sim_poly3  <- lm(y ~ poly(x, 3), data = sim_data)
+sim_rcs3   <- lm(y ~ rcs(x, 3), data = sim_data)
+sim_rcs4   <- lm(y ~ rcs(x, 4), data = sim_data)
+sim_rcs5   <- lm(y ~ rcs(x, 5), data = sim_data)
+```
+
+## `augment()` for fitted values and residuals 
+
+```{r}
+#| echo: true
+#| message: false
+
+
+sim_linear_aug <- augment(sim_linear, sim_data)
+sim_poly2_aug <- augment(sim_poly2, sim_data)
+sim_poly3_aug <- augment(sim_poly3, sim_data)
+sim_rcs3_aug <- augment(sim_rcs3, sim_data)
+sim_rcs4_aug <- augment(sim_rcs4, sim_data)
+sim_rcs5_aug <- augment(sim_rcs5, sim_data)
+```
+
+This will help us to plot the fits for each of these six models.
+
+## Add the Polynomial Fits
+
+```{r}
+p1 <- ggplot(sim_data, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", col = "black", se = F) +
+    labs(title = "Linear Fit") 
+
+p2 <- ggplot(sim_data, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", col = "forestgreen", se = F) +
+    labs(title = "Loess Smooth") 
+
+p3 <- ggplot(sim_poly2_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "blue", size = 1.25) +
+    labs(title = "Quadratic Polynomial") 
+
+p4 <- ggplot(sim_poly3_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "purple", size = 1.25) +
+    labs(title = "Cubic Polynomial") 
+
+(p1 + p2) / (p3 + p4)
+```
+
+## Restricted Cubic Spline Fits
+
+```{r}
+p0 <- ggplot(sim_data, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", col = "black", se = F) +
+    labs(title = "Linear Fit") 
+
+p3 <- ggplot(sim_rcs3_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "blue", size = 1.25) +
+    labs(title = "RCS with 3 knots") 
+
+p4 <- ggplot(sim_rcs4_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "red", size = 1.25) +
+    labs(title = "RCS with 4 knots") 
+
+p5 <- ggplot(sim_rcs5_aug, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = x, y = .fitted), 
+              col = "purple", size = 1.25) +
+    labs(title = "RCS with 5 knots") 
+
+(p0 + p3) / (p4 + p5)
+```
+
+# Returning to the `c4_im` data
+
+## Load and Partition Data
+
+This is from the `c4im` example we used last Thursday.
+
+```{r}
+#| echo: true
+c4im <- read_rds("c04/data/c4im.Rds")
+
+c4im <- c4im |>
+  mutate(fruit_c = fruit_day - mean(fruit_day))
+
+set.seed(432)    ## for future replication
+c4im_split <- initial_split(c4im, prop = 3/4)
+train_c4im <- training(c4im_split)
+test_c4im <- testing(c4im_split)
+```
+
+## Fitting Restricted Cubic Splines with `lm` and `rcs`
+
+For most applications, three to five knots strike a nice balance between complicating the model needlessly and fitting data pleasingly. Let's consider a restricted cubic spline model for `1000/bmi` based on `fruit_c` again, but now with:
+
+- in `temp3`, 3 knots, and
+- in `temp4`, 4 knots,
+
+```{r}
+#| echo: true
+temp3 <- lm(1000/bmi ~ rcs(fruit_c, 3), data = train_c4im)
+temp4 <- lm(1000/bmi ~ rcs(fruit_c, 4), data = train_c4im)
+```
+
+
+## Spline models for `bmi` and `fruit_c`
+
+```{r}
+temp3_aug <- augment(temp3, train_c4im)
+temp4_aug <- augment(temp4, train_c4im)
+
+p1 <- ggplot(train_c4im, aes(x = fruit_c, y = 1000/bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", col = "black", se = F) +
+    labs(title = "Linear Fit") 
+
+p2 <- ggplot(train_c4im, aes(x = fruit_c, y = 1000/bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", col = "purple", se = F) +
+    labs(title = "Loess Smooth") 
+
+p3 <- ggplot(temp3_aug, aes(x = fruit_c, y = 1000/bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = fruit_c, y = .fitted), 
+              col = "blue", size = 1.25) +
+    labs(title = "RCS, 3 knots") 
+
+p4 <- ggplot(temp4_aug, aes(x = fruit_c, y = 1000/bmi)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(x = fruit_c, y = .fitted), 
+              col = "red", size = 1.25) +
+    labs(title = "RCS, 4 knots") 
+
+(p1 + p2) / (p3 + p4)
+```
+
+## Let's try an RCS with 4 knots
+
+```{r}
+#| echo: true
+m_4 <- lm(1000/bmi ~ rcs(fruit_c, 4) + exerany + health,
+          data = train_c4im)
+
+m_4int <- lm(1000/bmi ~ rcs(fruit_c, 4) + exerany * health,
+          data = train_c4im)
+```
+
+## `m_4int` coefficients
+
+```{r}
+tidy(m_4int, conf.int = TRUE, conf.level = 0.90) |>
+  gt() |> fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 18)
+```
+
+## `m_4int` Residual Plots
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_4int, which = c(1,2))
+```
+
+## `m_4int` Residual Plots
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(m_4int, which = c(3,5))
+```
+
+## How do models `m_4` and `m_4int` do in testing? {.smaller}
+
+```{r}
+#| echo: true
+m4_test_aug <- augment(m_4, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted)
+m4int_test_aug <- augment(m_4int, newdata = test_c4im) |>
+  mutate(bmi_fit = 1000/.fitted)
+
+testing_r2 <- bind_rows(
+    rsq(m4_test_aug, truth = bmi, estimate = bmi_fit),
+    rsq(m4int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(model = c("m4", "m4int"))
+
+testing_rmse <- bind_rows(
+    rmse(m4_test_aug, truth = bmi, estimate = bmi_fit),
+    rmse(m4int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(model = c("m4", "m4int"))
+
+testing_mae <- bind_rows(
+    mae(m4_test_aug, truth = bmi, estimate = bmi_fit),
+    mae(m4int_test_aug, truth = bmi, estimate = bmi_fit)) |>
+    mutate(model = c("m4", "m4int"))
+```
+
+## `m_4` and `m_4int` in test sample
+
+After back-transformation of fitted values of `1000/bmi` to **bmi**:
+
+```{r}
+#| echo: true
+
+bind_cols(testing_r2 |> select(model, rsquare = .estimate), 
+          testing_rmse |> select(rmse = .estimate),
+          testing_mae |> select(mae = .estimate)) |> 
+  gt() |> fmt_number(columns = -model, decimals = 4) |>
+  tab_options(table.font.size = 20)
+```
+
