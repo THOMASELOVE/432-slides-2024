@@ -1,0 +1,529 @@
+---
+title: "432 Class 07"
+author: https://thomaselove.github.io/432-2024/
+date: "2024-02-06"
+format: docx 
+---
+
+## Today's Agenda
+
+- A First Example: Space Shuttle O-Rings
+- Predicting a Binary outcome using a single predictor
+    - using a linear probability model
+    - using logistic regression and `glm`
+    - using logistic regression and `lrm`
+    
+See Chapters 19-21 in our Course Notes for more on these models.
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(faraway) # data source
+library(broom)
+library(gt)
+library(patchwork)
+library(rms)
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+## Challenger Space Shuttle Data {.smaller}
+
+The US space shuttle Challenger exploded on 1986-01-28. An investigation ensued into the reliability of the shuttle's propulsion system. The explosion was eventually traced to the failure of one of the three field joints on one of the two solid booster rockets. Each of these six field joints includes two O-rings which can fail.
+
+- The discussion among engineers and managers raised concern that the probability of failure of the O-rings depended on the temperature at launch, which was forecast to be 31 degrees F. 
+- There are strong engineering reasons based on the composition of O-rings to support the judgment that failure probability may rise monotonically as temperature drops.
+
+We have data on 23 space shuttle flights that preceded *Challenger* on primary O-ring erosion and/or blowby and on the temperature in degrees Fahrenheit. No previous liftoff temperature was under 53 degrees F.
+
+
+## The "O-rings" data
+
+- `damage` = number of damage incidents out of 6 possible
+- we set `burst` = 1 if `damage` > 0
+
+```{r}
+#| echo: true
+orings1 <- faraway::orings |> tibble() |>
+    mutate(burst = case_when( damage > 0 ~ 1, TRUE ~ 0))
+
+orings1 |> summary()
+```
+
+## Association of `burst` and `temp`
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(orings1, aes(x = factor(burst), y = temp)) +
+    geom_violin() + 
+    geom_boxplot(aes(fill = factor(burst)), width = 0.3) +
+    guides(fill = "none") + 
+    labs(title = "Are bursts more common at low temperatures?",
+         subtitle = "23 prior space shuttle launches",
+         x = "Was there a burst? (1 = yes, 0 = no)", 
+         y = "Launch Temp (F)")
+```
+
+
+## Predict Prob(burst) using temperature?
+
+We want to treat the binary variable `burst` as the outcome, and `temp` as the predictor.
+
+- We'll jitter the points vertically so that they don't overlap completely if we have two launches with the same temperature.
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(orings1, aes(x = temp, y = burst)) +
+    geom_jitter(col = "navy", size = 3, width = 0, height = 0.1) +
+    labs(title = "Are bursts more common at low temperatures?",
+         subtitle = "23 prior space shuttle launches",
+         y = "Was there a burst? (1 = yes, 0 = no)", 
+         x = "Launch Temp (F)")
+```
+
+# A Linear Probability Model, fit with `lm()`
+
+## Linear model to predict Prob(burst)?
+
+```{r}
+#| echo: true
+mod1 <- lm(burst ~ temp, data = orings1)
+
+tidy(mod1, conf.int = T) |> gt() |>
+  fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+
+```
+
+- This is a **linear probability model**.
+
+$$
+\operatorname{\widehat{burst}} = 2.905 - 0.037(\operatorname{temp})
+$$
+
+## Plot linear probability model?
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(orings1, aes(x = temp, y = burst)) +
+    geom_jitter(col = "navy", size = 3, width = 0, height = 0.1) +
+    geom_smooth(method = "lm", se = F, col = "red",
+                formula = y ~ x) +
+    labs(title = "Bursts more common at lower temperatures",
+         subtitle = "23 prior space shuttle launches",
+         y = "Was there a burst? (1 = yes, 0 = no)", 
+         x = "Launch Temp (F)")
+```
+
+- It would help if we could see the individual launches...
+
+
+## Making Predictions with `mod1`
+
+```{r}
+#| echo: true
+mod1$coefficients
+```
+
+- What does `mod1` predict for the probability of a burst if the temperature at launch is 70 degrees F?
+
+```{r}
+#| echo: true
+predict(mod1, newdata = tibble(temp = 70))
+```
+
+- What if the temperature was actually 60 degrees F?
+
+## Making Several Predictions with `mod1`
+
+Let's use our linear probability model `mod1` to predict the probability of a burst at some other temperatures...
+
+```{r}
+#| echo: true
+newtemps <- tibble(temp = c(80, 70, 60, 50, 31))
+
+augment(mod1, newdata = newtemps)
+```
+
+- Uh, oh.
+
+## Residual Plots for `mod1`? (1/2)
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod1, which = c(1:2))
+```
+
+## Residual Plots for `mod1`? (2/2)
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod1, which = c(3,5))
+```
+
+
+## Models to predict a Binary Outcome
+
+Our outcome takes on two values (zero or one) and we then model the probability of a "one" response given a linear function of predictors.
+
+Idea 1: Use a *linear probability model*
+
+- Main problem: predicted probabilities that are less than 0 and/or greater than 1
+- Also, how can we assume Normally distributed residuals when outcomes are 1 or 0?
+
+## Models to predict a Binary Outcome
+
+Idea 2: Build a *non-linear* regression approach
+
+- Most common approach: logistic regression, part of the class of *generalized* linear models
+
+# A Logistic Regression Model, fit with `glm()`
+
+## The Logit Link and Logistic Function
+
+The function we use in logistic regression is called the **logit link**.
+
+$$
+logit(\pi) = log\left( \frac{\pi}{1 - \pi} \right) = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + ... + \beta_k X_k
+$$
+
+The inverse of the logit function is called the **logistic function**. If logit($\pi$) = $\eta$, then $\pi = \frac{exp(\eta)}{1 + exp(\eta)}$. 
+
+- The logistic function $\frac{e^x}{1 + e^x}$ takes any value $x$ in the real numbers and returns a value between 0 and 1.
+
+## The Logistic Function $y = \frac{e^x}{1 + e^x}$
+
+```{r, echo = FALSE, fig.height = 5}
+set.seed(43201)
+temp <- tibble(
+    x = runif(200, min = -5, max = 5),
+    y = exp(x) / (1 + exp(x)))
+
+ggplot(temp, aes(x = x, y = y)) + 
+    geom_line()
+```
+
+## The logit or log odds
+
+We usually focus on the **logit** in statistical work, which is the inverse of the logistic function.
+
+- If we have a probability $\pi < 0.5$, then $logit(\pi) < 0$.
+- If our probability $\pi > 0.5$, then $logit(\pi) > 0$.
+- Finally, if $\pi = 0.5$, then $logit(\pi) = 0$.
+
+### Why is this helpful?
+
+- log(odds(Y = 1)) or logit(Y = 1) covers all real numbers.
+- Prob(Y = 1) is restricted to [0, 1].
+
+## Predicting Pr(event) or Pr(no event)
+
+- Can we flip the story?
+
+```{r, echo = FALSE, fig.height = 5}
+set.seed(43201)
+temp <- tibble(
+    x = runif(200, min = -5, max = 5),
+    y = exp(x) / (1 + exp(x)),
+    y2 = 1 - y)
+
+p1 <- ggplot(temp, aes(x = x, y = y)) + 
+    geom_line() + 
+    labs(y = "Prob(event occurs)")
+p2 <- ggplot(temp, aes(x = x, y = y2)) + 
+    geom_line() +
+    labs(y = "Prob(no event)")
+
+p1 + p2
+```
+
+## Back to predicting Prob(burst)
+
+We'll use the `glm` function in R, specifying a logistic regression model.
+
+- Instead of predicting $Pr(burst)$, we're predicting $log(odds(burst))$ or $logit(burst)$.
+
+## `mod2` for Prob(burst)
+
+```{r}
+#| echo: true
+mod2 <- glm(burst ~ temp, data = orings1,
+            family = binomial(link = "logit"))
+
+tidy(mod2, conf.int = TRUE) |> gt() |>
+  fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+$$
+\log\left[ \frac { \widehat{P( \operatorname{burst} = \operatorname{1} )} }{ 1 - \widehat{P( \operatorname{burst} = \operatorname{1} )} } \right] = 15.043 - 0.232(\operatorname{temp})
+$$
+
+## Predicting with `mod2`
+
+- For a temperature of 70 F at launch, what is our prediction?
+
+log(odds(burst)) = 15.043 - 0.232 (70) = -1.197
+
+- Exponentiate to get the odds...
+
+odds(burst) = exp(-1.197) = 0.302
+
+- so, we can estimate the probability by
+
+$$
+Pr(burst) = \frac{0.302}{(0.302+1)} = 0.232.
+$$
+
+## Prediction from `mod2` for temp = 60
+
+What is the predicted probability of a burst if the temperature is 60 degrees?
+
+
+- log(odds(burst)) = 15.043 - 0.232 (60) = 1.123
+
+- odds(burst) = exp(1.123) = 3.074
+
+- Pr(burst) = 3.074 / (3.074 + 1) = 0.755
+
+## Will `augment` do this, as well?
+
+Yes, and it will retain many more decimal places in intermediate calculations...
+
+```{r}
+#| echo: true
+temps <- tibble(temp = c(60,70))
+
+augment(mod2, newdata = temps, type.predict = "link")
+augment(mod2, newdata = temps, type.predict = "response")
+```
+
+## Plotting the Logistic Regression Model
+
+Use the `augment` function to get the fitted probabilities into the original data, then plot.
+
+- Note that we're just connecting the predictions made for observed `temp` values with `geom_line`, so the appearance of the function isn't as smooth as the actual logistic regression model.
+
+```{r}
+#| echo: true
+#| output-location: slides
+
+mod2_aug <- augment(mod2, type.predict = "response")
+
+ggplot(mod2_aug, aes(x = temp, y = burst)) +
+  geom_point(alpha = 0.4) +
+  geom_line(aes(x = temp, y = .fitted), 
+            col = "purple", size = 1.5) +
+  labs(title = "Fitted Logistic mod2 for Pr(burst)")
+```
+
+## Comparing fits of `mod1` and `mod2`
+
+```{r}
+#| fig-height: 5
+
+p1 <- ggplot(orings1, aes(x = temp, y = burst)) +
+    geom_jitter(height = 0.1) +
+    geom_smooth(method = "lm", se = F, col = "red",
+                formula = y ~ x) +
+    labs(title = "Linear Probability mod1",
+         y = "Burst? (1 = yes, 0 = no)", 
+         x = "Launch Temp (F)")
+
+
+p2 <- ggplot(mod2_aug, aes(x = temp, y = burst)) +
+    geom_jitter(height = 0.1) +
+    geom_line(aes(x = temp, y = .fitted), 
+            col = "purple", size = 1.5) +
+    labs(title = "Logistic Regression mod2",
+         y = "Burst? (1 = yes, 0 = no)", 
+         x = "Launch Temp (F)")
+
+p1 + p2
+```
+
+## Try exponentiating `mod2` coefficients?
+
+How can we interpret the coefficients of the model?
+
+$$
+logit(burst) = log(odds(burst)) = 15.043 - 0.232 temp
+$$
+
+### Exponentiating the slope is helpful
+
+```{r}
+#| echo: true
+exp(-0.232)
+```
+
+
+## Exponentiating the slope helps
+
+```{r}
+#| echo: true
+exp(-0.232)
+```
+
+Suppose Launch A's temperature was one degree higher than Launch B's.
+
+- The **odds** of Launch A having a burst are 0.793 times as large as they are for Launch B.
+- Odds Ratio estimate comparing two launches whose `temp` differs by 1 degree is 0.793
+
+## Exponentiated and tidied slope of `temp` (`mod2`)
+
+```{r}
+#| echo: true
+tidy(mod2, exponentiate = TRUE, conf.int = TRUE) |>
+    filter(term == "temp") |>
+    gt() |> fmt_number(decimals = 3) |> 
+    tab_options(table.font.size = 20)
+```
+
+- What would it mean if the Odds Ratio for `temp` was 1?
+- How about an odds ratio that was greater than 1?
+
+# A logistic regression model, fit with `lrm()` from **rms**
+
+## Fitting the model again
+
+```{r}
+#| echo: true
+d <- datadist(orings1)
+options(datadist = "d")
+
+mod3 <- lrm(burst ~ temp, data = orings1, x = TRUE, y = TRUE)
+```
+
+as compared to
+
+```{r}
+#| echo: true
+mod2 <- glm(burst ~ temp, data = orings1, 
+            family =binomial(link ="logit"))
+```
+
+These will fit the same model.
+
+## `mod3` Results
+
+```{r}
+#| echo: true
+
+mod3
+```
+
+## `summary(mod3)` Results
+
+```{r}
+#| echo: true
+
+summary(mod3)
+```
+
+### Effects Plot
+
+```{r}
+#| echo: true
+#| fig-height: 3
+
+plot(summary(mod3))
+```
+
+## Predictions from `mod3`
+
+```{r}
+#| echo: true
+
+newdat <- tibble(temp = c(50, 60, 70, 80))
+
+## predictions on the log odds scale
+predict(mod3, newdata = newdat)
+
+## predictions on the probability scale
+predict(mod3, newdata = newdat, type = c("fitted"))
+```
+
+
+## Plot in-sample predictions on log-odds scale
+
+```{r}
+#| echo: true
+#| fig-height: 5
+
+ggplot(Predict(mod3))
+```
+
+## Plot in-sample predictions on probability scale
+
+```{r}
+#| echo: true
+#| fig-height: 5
+ggplot(Predict(mod3, fun = plogis)) +
+  labs(y = "Predicted Pr(burst) from mod3",
+       title = "mod3 with the orings1 data")
+```
+
+## Nomogram for `mod3`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(nomogram(mod3, fun = plogis, funlabel = "Pr(burst)"), 
+     lplabel="log odds (burst)")
+```
+
+## Regression on a Binary Outcome
+
+**Linear Probability Model** (a linear model)
+
+```
+lm(event ~ predictor1 + predictor2 + ..., data = tibblename)
+```
+
+- Pr(event) is linear in the predictors
+
+**Logistic Regression Model** (generalized linear model)
+
+```
+glm(event ~ pred1 + pred2 + ..., data = tibblename,
+            family = binomial(link = "logit"))
+or 
+
+dd <- datadist(tibblename); options(datadist = "dd")
+lrm(event ~ pred1 + pred2 + ..., data = tibblename, 
+             x = TRUE, y = TRUE)
+```
+
+- Logistic Regression forces a prediction in (0, 1)
+- log(odds(event)) is linear in the predictors
+
+## The logistic regression model
+
+$$
+logit(event) = log\left( \frac{Pr(event)}{1 - Pr(event)} \right) = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + ... + \beta_k X_k
+$$
+
+$$
+odds(event) = \frac{Pr(event)}{1 - Pr(event)}
+$$
+
+$$
+Pr(event) = \frac{odds(event)}{odds(event) + 1}
+$$
+
+$$
+Pr(event) = \frac{exp(logit(event))}{1 + exp(logit(event))}
+$$ 
+
+## Next Time
+
+- Binary regression models with multiple predictors
+- Assessing the quality of fit for a logistic model

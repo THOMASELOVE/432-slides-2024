@@ -1,6 +1,6 @@
 ---
 title: "432 Class 06"
-author: https://thomaselove.github.io/432-2024/
+author: Thomas E. Love, Ph.D.
 date: "2024-02-01"
 format:
   revealjs: 

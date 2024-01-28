@@ -1,0 +1,658 @@
+---
+title: "432 Class 08"
+author: Thomas E. Love, Ph.D.
+date: "2024-02-08"
+format:
+  revealjs: 
+    theme: default
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 08 | 2024-02-08 | <https://thomaselove.github.io/432-2024/>"
+---
+
+## Today's Agenda
+
+- The Favorite Movies Data
+- The Bechdel Test
+- Fitting Three Logistic Regression Models with `glm()` and `lrm()`
+  - Using tidy, glance and augment from `broom`
+  - Making Predictions with the model
+  - Interpreting exponentiated coefficients as odds ratios
+  - Likelihood Ratio Tests
+  - ROC curve and the Area under the Curve
+  - Summaries from `lrm`
+  - Validating Model Summaries
+    
+See Chapters 19-21 in our Course Notes for more on these models.
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(googlesheets4) # import from Google Sheet
+library(broom)
+library(janitor)
+library(knitr)
+library(naniar)
+library(pROC)
+library(rms)
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+# Our "Favorite Movies" Data
+
+## Get The Movies Data from a Google Sheet
+
+```{r}
+#| echo: true
+
+gs4_deauth()
+mov23_full <- read_sheet("https://docs.google.com/spreadsheets/d/1ZGbMGxc23pAhBuCDLw_-Xe-6ZlhkaEg6L8HzXxmZgxo/edit?usp=sharing")
+
+dim(mov23_full)
+```
+
+## Select Today's Variables
+
+```{r}
+#| echo: true
+mov23 <- mov23_full |>
+  select(film_id, bechdel, year, mpa, meta_score, 
+         gross_ww_2023, comedy, drama, country, film) |>
+  type.convert(as.is = FALSE) |>
+  mutate(film_id = as.character(film_id),
+         film = as.character(film))
+
+dim(mov23)
+```
+
+## The Bechdel Test
+
+The Bechdel Test is a simple way to gauge the active presence of female characters in Hollywood films and just how well rounded and complete those roles are^[See <https://feministfrequency.com/video/the-bechdel-test-for-women-in-movies/>]. To pass the test, a movie has to have:
+
+1. at least two (named) women in it
+2. who talk to each other
+3. about something besides a man
+
+> The Bechdel Test, or Bechdel-Wallace Test was popularized by Alison Bechdel's comic, in a 1985 strip called [The Rule](https://dykestowatchoutfor.com/the-rule/). 
+
+- from <https://bechdeltest.com/>
+
+## How Many of Our Favorites Pass the Bechdel Test?
+
+```{r}
+#| echo: true
+mov23 |> tabyl(bechdel) |> adorn_pct_formatting()
+```
+
+
+## Some Cleaning Up and Rescaling of Variables
+
+Since `bechdel` will be our outcome today, we'll drop those films who are missing this information.
+
+```{r}
+#| echo: true
+mov23 <- mov23 |>
+  filter(complete.cases(bechdel))
+```
+
+We'll also create an `age` variable and use it instead of `year`, and we'll make sure that `bech` is 1 when the film passes the test, and 0 when the film fails.
+
+```{r}
+#| echo: true
+mov23 <- mov23 |>
+  mutate(age = 2023-year,
+         bech = ifelse(bechdel == "Pass", 1, 0))
+```
+
+## Codebook
+
+Variable | Description
+:------------: | :--------------------------------------------------
+`film_id` | identifying code (M-001 through M-156)
+`bech` | 0 = Failed Bechdel Test or 1 = Passed Test
+`age` | 2003 - Year of release (1942-2022), so age in years
+`mpa` | MPA rating (G, PG, PG-13, R or NR)
+`meta_score` | Metacritic score (from critics: 0-100 scale)
+`gross_ww_23` | Worldwide gross income in millions of 2023 US dollars
+`comedy` | Is comedy one of the three genres listed at IMDB?
+`drama` | Is drama one of the three genres listed at IMDB?
+`country` | country of origin (first listed at IMDB)
+`film` | title of film
+
+Data Sources: <https://www.imdb.com/> and <https://bechdeltest.com> 
+
+## How Much Missing Data Are We To Deal With?
+
+```{r}
+#| echo: true
+miss_var_summary(mov23) |> filter(n_miss > 0)
+```
+
+### Which films are missing `meta_score`?
+
+```{r}
+#| echo: true
+miss_case_summary(mov23) |> filter(n_miss > 0)
+```
+
+## Identifying the films with missing data
+
+```{r}
+#| echo: true
+mov23 |> select(film_id, film, meta_score, country) |> 
+  slice(c(29, 101, 151))
+```
+
+## How Many of Our Favorites are U.S. Movies?
+
+```{r}
+#| echo: true
+mov23 <- mov23 |>
+  mutate(usa = ifelse(country == "USA", 1, 0))
+mov23 |> tabyl(usa, country)
+```
+
+We'll drop the three films from India (no `meta_score`)
+
+```{r}
+#| echo: true
+mov23 <- mov23 |> filter(complete.cases(meta_score))
+```
+
+
+## How About the MPA Ratings?
+
+Let's collapse to the three largest categories.
+
+```{r}
+#| echo: true
+mov23 <- mov23 |> mutate(mpa3 = fct_lump_n(mpa, n = 2))
+
+mov23 |> tabyl(mpa3, mpa) |> 
+  adorn_totals(where = c("row", "col"))
+```
+
+## Splitting the sample?
+
+We have `r nrow(mov23)` films in our `mov23` tibble. 
+
+- It turns out that a logistic regression model needs about 96 observations just to fit a reasonable intercept term.
+- Each additional coefficient we need to fit requires another 10-20 observations for us to get results that will validate well.
+
+Here, we have seven predictors (age, mpa3, meta_score, gross_ww_23, comedy, drama and usa) we want to explore.
+
+Does it make sense to split the sample into separate training and testing samples?
+
+# Model 1. Using `year` to predict Pr(`bechdel` = Pass)
+
+## The Logistic Regression Model
+
+$$
+logit(event) = log\left( \frac{Pr(event)}{1 - Pr(event)} \right) = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + ... + \beta_k X_k
+$$
+
+$$
+odds(event) = \frac{Pr(event)}{1 - Pr(event)}
+$$
+
+$$
+Pr(event) = \frac{odds(event)}{odds(event) + 1}
+$$
+
+$$
+Pr(event) = \frac{exp(logit(event))}{1 + exp(logit(event))}
+$$ 
+
+## Model 1
+
+```{r}
+#| echo: true
+mod_1 <- glm(bech ~ age,
+             data = mov23, family = binomial(link = "logit"))
+
+mod_1$coefficients
+```
+
+$$
+\begin{aligned}
+\log\left[ \frac { \widehat{P( \operatorname{bech} = \operatorname{1} )} }{ 1 - \widehat{P( \operatorname{bech} = \operatorname{1} )} } \right] &= 0.962 - 0.031(\operatorname{age})
+\end{aligned}
+$$
+
+## Tidied Model 1 coefficients
+
+```{r}
+#| echo: true
+tidy(mod_1, conf.int = TRUE, conf.level = 0.90) |> 
+  kable(digits = c(0, 3, 3, 2, 3, 2, 2))
+```
+
+## Predicting Pr(pass Bechdel) for a 50 year old movie
+
+$$
+\begin{aligned}
+\log\left[ \frac { \widehat{P( \operatorname{bech} = \operatorname{1} )} }{ 1 - \widehat{P( \operatorname{bech} = \operatorname{1} )} } \right] &= 0.962 - 0.031(\operatorname{age})
+\end{aligned}
+$$
+
+$$
+logit(bechdel = Pass) = 0.962 - .031 (50) = -0.588
+$$
+
+$$
+odds(bechdel = Pass) = exp(-0.588) = 0.5554
+$$
+
+$$
+Pr(bechdel = Pass) = 0.5554 / (1 + 0.5554) = 0.357
+$$
+
+Estimated Percentage Chance of Passing Bechdel is 35.7%.
+
+## Predictions for three movies (not in `mov23` data)
+
+Movie | Year | Age
+---------: | -----: | ----: 
+The Godfather, Part II | 1974 | 49
+Chinatown | 1974 | 49
+The Incredibles | 2004 | 19
+
+```{r}
+#| echo: true
+
+new3_a <- tibble(age = c(49, 49, 19), 
+               film = c("Godfather II", "Chinatown", "Incredibles"))
+
+augment(mod_1, newdata = new3_a, type.predict = "response")
+```
+
+## Tidied Model 1 coefficients (after exponentiating)
+
+```{r}
+#| echo: true
+tidy(mod_1, exponentiate = TRUE, conf.int = TRUE, conf.level = 0.90) |> 
+  kable(digits = 3)
+```
+
+The exponentiated slope coefficient (for age) is very useful.
+
+Suppose we compare two films. The older movie was made 1 year earlier than the newer movie. What can we conclude about the effect of the movie's `age` based on mod_1? The exponentiated coefficient for `age`, 0.969, describes the relative odds of passing the Bechdel test.
+
+- Specifically, the movie whose `age` is one year older has 0.969 times the odds (96.9% of the odds) of the younger movie of passing the Bechdel test, according to our model mod_1.
+
+## What does `glance(mod_1)` tell us?
+
+```{r}
+#| echo: true
+
+glance(mod_1) |> kable(digits = 1)
+```
+
+## Likelihood Ratio Test: Model 1
+
+- compares model mod_1 to a null model
+- can also get Rao's efficient score test (test = `"Rao"`)
+- or Pearson's chi-square test (test = `"Chisq"`)
+
+```{r}
+#| echo: true
+anova(mod_1, test = "LRT")
+```
+
+## How do we evaluate prediction quality?
+
+The Receiver Operating Characteristic (ROC) curve is one approach. We can calculate the Area under this curve (sometimes labeled AUC or just C). AUC falls between 0 and 1.
+
+AUC | Interpretation
+----: | :-----------------------------
+0.5 | A coin-flip. Model is no better than flipping a coin.
+0.6 | Still a fairly weak model.
+0.7 | Low end of an "OK" model fit.
+0.8 | Pretty good predictive performance.
+0.9 | Outstanding predictive performance.
+1.0 | Perfect predictive performance.
+
+## How well does `mod_1` predict?
+
+1. Collected predicted probabilities for our `mov23` data:
+
+```{r}
+#| echo: true
+predict.prob1 <- predict(mod_1, type = "response")
+```
+
+2. Calculate the ROC curve
+
+```{r}
+#| echo: true
+roc1 <- roc(mod_1$data$bech, predict.prob1)
+roc1
+```
+
+## Plotting the ROC Curve for `mod_1`
+
+The complete output from the call to roc1 was
+
+```
+Call:
+roc.default(response = mod_1$data$bech, 
+                  predictor = predict.prob1)
+Data: predict.prob1 in 63 controls (mod_1$data$bechdel 0) 
+                        < 86 cases (mod_1$data$bechdel 1).
+Area under the curve: 0.612
+```
+
+The actual plot will be on the next slide.
+
+```{r}
+#| echo: true
+#| eval: false
+plot(roc1, main = "ROC Curve for Model mod_1", 
+     lwd = 2, col = "blue4")
+legend('bottomright', 
+       legend = paste("AUC is: ",round_half_up(auc(roc1),3)))
+```
+
+Note that I used `#| fig-asp: 1` to obtain a square plot.
+
+---
+
+```{r}
+#| fig-asp: 1
+plot(roc1, main = "ROC Curve for Model mod_1", 
+     lwd = 2, col = "blue4")
+legend('bottomright', 
+       legend = paste("AUC is: ",round_half_up(auc(roc1),3)))
+```
+
+## Model Summaries via `lrm` fit
+
+```{r}
+#| echo: true
+
+d <- datadist(mov23)
+options(datadist = "d")
+
+mod1_lrm <- lrm(bech ~ age, data = mov23, 
+                x = TRUE, y = TRUE)
+```
+
+## What's in `mod1_lrm`?
+
+![](c08/figures/fig1.png){width=90%}
+
+# Model 2. Predicting Pr(`bechdel` = Pass) using four predictors
+
+## Model 2
+
+```{r}
+#| echo: true
+mod_2 <- glm(bech ~ age + meta_score + 
+               mpa3 + usa, data = mov23, 
+             family = binomial(link = logit))
+```
+
+
+$$
+\begin{aligned}
+\log\left[ \frac { \widehat{P( \operatorname{bech} = \operatorname{1} )} }{ 1 - \widehat{P( \operatorname{bech} = \operatorname{1} )} } \right] &= 2.288 - 0.035(\operatorname{age})\\
+&\quad - 0.018(\operatorname{meta\_score}) - 0.172(\operatorname{mpa3}_{\operatorname{R}})\\
+&\quad + 0.378(\operatorname{mpa3}_{\operatorname{Other}}) - 0.052(\operatorname{usa})
+\end{aligned}
+$$
+
+## Predictions for three movies (not in `mov23` data)
+
+```{r}
+#| echo: true
+new3_b <- tibble(meta_score = c(90, 92, 90), mpa3 = c("R", "R", "Other"),
+               usa = c(1, 1, 1), age = c(49, 49, 19), 
+               film = c("Godfather II", "Chinatown", "Incredibles"))
+
+augment(mod_2, newdata = new3_b, type.predict = "response")
+```
+
+
+## Tidied Model 2 coefficients
+
+```{r}
+#| echo: true
+tidy(mod_2, exponentiate = TRUE, 
+     conf.int = TRUE, conf.level = 0.90) |> 
+  kable(digits = 3)
+```
+
+## Compare `mod_1` to `mod_2` with `glance()`
+
+```{r}
+#| echo: true
+
+bind_rows(glance(mod_1), glance(mod_2)) |>
+  mutate(model = c("1", "2")) |>
+  kable(digits = 1)
+```
+
+- What conclusions does this output suggest?
+
+## Compare Models 1 and 2 with ANOVA
+
+- compares model mod_1 to a null model
+
+```{r}
+#| echo: true
+anova(mod_1, mod_2, test = "LRT")
+```
+
+- Rao's efficient score test (test = `"Rao"`) yields p = 0.3359
+- Pearson's chi-square test (test = `"Chisq"`) also yields p = 0.3241
+- Conclusions?
+
+## Plotting the ROC curve for Model `mod_2`
+
+```{r}
+#| echo: true
+#| eval: false
+predict.prob2 <- predict(mod_2, type = "response")
+roc2 <- roc(mod_2$data$bech, predict.prob2)
+plot(roc2, main = "ROC Curve for Model mod_2", 
+     lwd = 2, col = "blue4")
+legend('bottomright', 
+       legend = paste("AUC is: ",round_half_up(auc(roc2),3)))
+```
+
+Result on Next Slide
+
+---
+
+```{r}
+#| fig-asp: 1
+predict.prob2 <- predict(mod_2, type = "response")
+roc2 <- roc(mod_2$data$bech, predict.prob2)
+plot(roc2, main = "ROC Curve for Model mod_2", 
+     lwd = 2, col = "blue4")
+legend('bottomright', 
+       legend = paste("AUC is: ",round_half_up(auc(roc2),3)))
+```
+
+## Model Summaries via `lrm` fit
+
+```{r}
+#| echo: true
+
+d <- datadist(mov23)
+options(datadist = "d")
+
+mod2_lrm <- lrm(bech ~ age + meta_score + mpa3 + usa, 
+                data = mov23, x = TRUE, y = TRUE)
+```
+
+## What's in `mod2_lrm`?
+
+![](c08/figures/fig2.png){width=90%}
+
+# Model 3. Predicting Pr(`bechdel` = Pass) using five predictors
+
+## Model 3
+
+```{r}
+#| echo: true
+mod_3 <- glm(bech ~ age + meta_score + 
+               gross_ww_2023 + comedy + drama,
+             data = mov23, family = binomial(link = logit))
+```
+
+$$
+\begin{aligned}
+\log\left[ \frac { \widehat{P( \operatorname{bech} = \operatorname{1} )} }{ 1 - \widehat{P( \operatorname{bech} = \operatorname{1} )} } \right] &= 1.37 - 0.033(\operatorname{age})\\
+&\quad - 0.023(\operatorname{meta\_score}) + 0.001(\operatorname{gross\_ww\_2023})\\
+&\quad + 0.931(\operatorname{comedy}) + 0.842(\operatorname{drama})
+\end{aligned}
+$$
+
+
+## Tidied Model 3 coefficients (exponentiated)
+
+```{r}
+#| echo: true
+tidy(mod_3, exponentiate = TRUE, 
+     conf.int = TRUE, conf.level = 0.90) |> 
+  kable(digits = 3)
+```
+
+## Compare models with `glance()`
+
+```{r}
+#| echo: true
+
+bind_rows(glance(mod_1), glance(mod_2), glance(mod_3)) |>
+  mutate(model = c("1", "2", "3")) |>
+  kable(digits = 1)
+```
+
+## ANOVA comparison of `mod_1` to `mod_3`
+
+```{r}
+#| echo: true
+anova(mod_1, mod_3, test = "LRT")
+```
+
+- Rao test: p = 0.01201
+
+## Plotting the ROC curve for Model `mod_3`
+
+```{r}
+#| echo: true
+#| eval: false
+predict.prob3 <- predict(mod_3, type = "response")
+roc3 <- roc(mod_3$data$bech, predict.prob3)
+plot(roc3, main = "ROC Curve for Model mod_3", 
+     lwd = 2, col = "blue4")
+legend('bottomright', 
+       legend = paste("AUC is: ",round_half_up(auc(roc3),3)))
+```
+
+Result on Next Slide
+
+---
+
+```{r}
+#| fig-asp: 1
+predict.prob3 <- predict(mod_3, type = "response")
+roc3 <- roc(mod_3$data$bech, predict.prob3)
+plot(roc3, main = "ROC Curve for Model mod_3", 
+     lwd = 2, col = "blue4")
+legend('bottomright', 
+       legend = paste("AUC is: ",round_half_up(auc(roc3),3)))
+```
+
+## Model Summaries via `lrm` fit
+
+```{r}
+#| echo: true
+
+d <- datadist(mov23)
+options(datadist = "d")
+
+mod3_lrm <- lrm(bech ~ age + meta_score + 
+               gross_ww_2023 + comedy + drama,
+                data = mov23, x = TRUE, y = TRUE)
+```
+
+## What's in `mod3_lrm`?
+
+![](c08/figures/fig3.png){width=90%}
+
+## Store Validated `mod1_lrm` and `mod3_lrm` summaries
+
+```{r}
+#| echo: true
+set.seed(4321)
+v1 <- validate(mod1_lrm)
+
+set.seed(4322) 
+v3 <- validate(mod3_lrm)
+```
+
+## Now, let's look at the validated Somers' d statistics:
+
+- **AUC = 0.5 + (Somer's d)/2**
+
+```{r}
+#| echo: true
+v1["Dxy",]
+v3["Dxy",]
+```
+
+## How about the Nagelkerke $R^2$ after validation?
+
+```{r}
+#| echo: true
+v1["R2",]
+v3["R2",]
+```
+
+- Conclusions?
+
+## Predictions for three movies (not in `mov23` data)
+
+```{r}
+#| echo: true
+new3_c <- tibble(meta_score = c(90, 92, 90), comedy = c(0, 0, 0), drama = c(1, 1, 0),
+                 gross_ww_2023 = c(288.741, 175.946, 992.372), age = c(49, 49, 19), 
+               film = c("Godfather II", "Chinatown", "Incredibles"))
+
+augment(mod_3, newdata = new3_c, type.predict = "response")
+```
+
+## Actual Bechdel Test Results
+
+Film | Bechdel Rating | Result
+--------------------: | :----: | :----:
+The Godfather, Part II | 2 | Fail
+Chinatown | 2 | Fail
+The Incredibles | 3 | Pass
+
+Ratings obtained through API at bechdeltest.com
+
+- 0 means "no two named women"
+- 1 means "no talking between the women"
+- 2 means "talking only about a man"
+- 3 means "passes the test"
+
+Example: <https://bechdeltest.com/api/v1/getMovieByImdbId?imdbid=0071315>
+
+## Next Time
+
+1. Walking through necessary analyses for Project A's logistic regression model
+2. Plotting and Interpreting Effect Sizes from Logistic Regression Models (see Chapters 21-22)
