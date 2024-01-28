@@ -1,0 +1,808 @@
+---
+title: "432 Class 06"
+author: https://thomaselove.github.io/432-2024/
+date: "2024-02-01"
+format: docx
+---
+
+## Today's Agenda
+
+- Data from the Heart and Estrogen/Progestin Study
+- Using Spearman's $\rho^2$ to guide decisions about spending degrees of freedom
+- Using `ols` to fit linear regression models in the presence of missing values
+- Using `aregImpute` to facilitate principled multiple imputation when fitting regressions
+- Developing detailed regression results under a variety of imputation plans
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(janitor)
+library(broom)
+library(gt)
+library(naniar)
+library(simputation)
+library(rms)
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+# The HERS Data
+
+## Today's Data
+
+Heart and Estrogen/Progestin Study (HERS)
+
+- Clinical trial of hormone therapy for the prevention of recurrent heart attacks and deaths among 2763 post-menopausal women with existing coronary heart disease (see Hulley et al 1998 and many subsequent references, including Vittinghoff, Chapter 4.)
+- We're excluding the women in the trial with a diabetes diagnosis.
+
+## Ingesting the Data
+
+```{r}
+#| echo: true
+hers_raw <- read_csv("c06/data/hersdata.csv", show_col_types = FALSE) |> 
+    clean_names() |> mutate_if(is.character, as.factor)
+
+hers1 <- hers_raw |> 
+  filter(diabetes == "no") |>
+  mutate(subject = as.character(subject)) |>
+  select(subject, ldl, age, sbp, bmi, ht, smoking, drinkany, 
+         physact, diabetes)
+
+dim(hers1)
+```
+
+**Goal** Predict `ldl` using `age`, `sbp`, `bmi`, `smoking`, `drinkany`, and `physact`, across both `HT` levels but restricted to women without `diabetes`.
+
+## Summary of data in `hers1`
+
+```{r}
+#| echo: true
+summary(hers1)
+```
+
+
+## `hers1` Codebook (n = `r nrow(hers1)`) {.smaller}
+
+Variable   | Description 
+---------: | --------------------------------- 
+`subject`  | subject code 
+`HT`       | factor: hormone therapy or placebo 
+`diabetes` | yes or no (all are no in our sample)
+`ldl`      | LDL cholesterol in mg/dl 
+`age`      | age in years 
+`sbp`      | systolic BP in mm Hg
+`bmi`      | body-mass index in kg/m^2^
+`smoking`  | yes or no
+`drinkany` | yes or no
+`physact`  | 5-level factor, details next slide
+
+
+## The `physact` variable
+
+```{r}
+#| echo: true
+
+hers1 |> count(physact)
+```
+
+Comparison is to activity levels for these women just before menopause.
+
+## Any missing data?
+
+```{r}
+#| echo: true
+
+miss_var_summary(hers1)
+```
+
+## Single Imputation for `drinkany`, `bmi` and `ldl`
+
+Since `drinkany` is a factor, we have to do some extra work to impute.
+
+```{r}
+#| echo: true
+
+set.seed(432092)
+
+hers2 <- hers1 |>
+    mutate(drinkany_n = 
+               ifelse(drinkany == "yes", 1, 0)) |>
+    impute_pmm(drinkany_n ~ age + smoking) |>
+    mutate(drinkany = 
+               ifelse(drinkany_n == 1, "yes", "no")) |>
+    impute_rlm(bmi ~ age + smoking + sbp) |>
+    impute_rlm(ldl ~ age + smoking + sbp + bmi) 
+```
+
+## Now, check missingness...
+
+```{r}
+#| echo: true
+
+miss_var_summary(hers2)
+```
+
+## Multiple Imputation using `aregImpute` from `Hmisc`
+
+Model to predict all missing values of any variables, using additive regression bootstrapping and predictive mean matching.
+
+There are four steps.
+
+## Steps in `aregImpute`
+
+1. `aregImpute` draws a sample with replacement from the observations where the target variable is not missing. 
+2. It then fits a flexible additive model to predict this target variable while finding the optimum transformation of it. 
+3. It then uses this fitted flexible model to predict the target variable in all of the original observations.
+4. Finally, it imputes each missing value of the target variable with the observed value whose predicted transformed value is closest to the predicted transformed value of the missing value.
+
+## Fitting a Multiple Imputation Model
+
+```{r}
+#| echo: true
+
+set.seed(4320132)
+dd <- datadist(hers1)
+options(datadist = "dd")
+fit3 <- aregImpute(~ ldl + age + smoking + drinkany +
+                       sbp + physact + bmi, 
+                   nk = c(0, 3:5), tlinear = FALSE, pr = FALSE,
+                   data = hers1, B = 10, n.impute = 20) 
+```
+
+## Multiple Imputation using `aregImpute`
+
+`aregImpute` requires specifications of all variables, and several other details:
+
+- `n.impute` = number of imputations, we'll run 20
+- `nk` = number of knots to describe level of complexity, with our choice `nk = c(0, 3:5)` we'll fit both linear models and models with restricted cubic splines with 3, 4, and 5 knots
+
+## Multiple Imputation using `aregImpute`
+
+`aregImpute` requires specifications of all variables, and several other details:
+
+- `tlinear = FALSE` allows the target variable to have a non-linear transformation when `nk` is 3 or more
+- `B = 10` specifies 10 bootstrap samples will be used
+- `data` specifies the source of the variables
+- `pr = FALSE` suppresses printing of iteration messages
+
+
+## `aregImpute` Imputation Results
+
+```{r}
+#| echo: true
+
+fit3
+```
+
+
+## Plot the imputed values...
+
+```{r}
+#| echo: true
+#| fig-height: 6
+par(mfrow = c(1,3)); plot(fit3); par(mfrow = c(1,1))
+```
+
+
+## Interpreting plot of imputations
+
+- For `ldl`, we imputed most of the 7 missing subjects in most of the 20 imputation runs to values within a range of around 120 through 200, but occasionally, we imputed values that were substantially lower than 100. 
+- For `drinkany` we imputed about 70% no and 30% yes.
+- For `bmi`, we imputed values ranging from about 23 to 27 in many cases, and up near 40 in other cases. 
+- This method never imputes a value for a variable that doesn't already exist in the data.
+
+# Deciding Where to Try Non-Linear Terms
+
+## Spending degrees of freedom wisely
+
+- Suppose we have many possible predictors, and minimal theory or subject matter knowledge to guide us.
+- We might want our final inferences to be as unbiased as possible. To accomplish this, we have to pay a penalty (in terms of degrees of freedom) for any "peeks" we make at the data in advance of fitting a model.
+- So that rules out a lot of decision-making about non-linearity based on looking at the data, if our sample size isn't incredibly large.
+
+## The `helpdat` example from Class 5
+
+```{r}
+#| echo: true
+helpdat <- read_rds("c06/data/helpdat.Rds")
+dim(helpdat)
+names(helpdat)
+```
+
+- In this case, we are predicting `cesd` using *n* = 453 observations and 6 candidate predictors (`age`, `sex`, `subst`, `mcs`, `pcs` and `pss_fr`.) 
+    - In addition, adding non-linearity to our model costs additional degrees of freedom, as we'll see in the next two slides.
+
+## Adding Non-Linear Terms Spends DF
+
+What happens when we add a non-linear term?
+
+- Adding a polynomial of degree D costs D degrees of freedom.
+  - So a polynomial of degree 2 (quadratic) costs 2 df, or 1 more than the main effect alone.
+- Adding a restricted cubic spline with K knots costs K-1 df.
+  - So adding a spline with 4 knots uses 3 df, or 2 more than the main effect alone.
+  - We'll only consider splines with 3, 4, or 5 knots.
+
+## Adding Non-Linear Terms Spends DF
+
+Adding an interaction (product term) depends on the main effects of the predictors we are interacting
+
+- If the product term's predictors have df1 and df2 degrees of freedom, product term adds df1 $\times$ df2 degrees of freedom.
+    - An interaction of a binary and quantitative variable adds 1 $\times$ 1 = 1 more df to the main effects model.
+- When we use a quantitative variable in a spline and interaction, we'll do the interaction on the main effect, not the spline.
+
+
+## Spearman's $\rho^2$ plot: A smart first step?
+
+Spearman's $\rho^2$ is an indicator (not a perfect one) of potential predictive punch, but doesn't give away the game.
+
+- Idea: Perhaps we should focus our efforts re: non-linearity on predictors that score better on this measure.
+
+```{r}
+#| echo: true
+spear_cesd <- spearman2(cesd ~ mcs + subst + pcs + age + sex + pss_fr, 
+                        data = helpdat)
+```
+
+## Spearman's $\rho^2$ Plot
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(spear_cesd)
+```
+
+## Conclusions from Spearman $\rho^2$ Plot
+
+- `mcs` is the most attractive candidate for a non-linear term, as it packs the most potential predictive punch, so if it does turn out to need non-linear terms, our degrees of freedom will be well spent. 
+    + This **does not** mean that `mcs` actually needs a non-linear term, or will show meaningfully better results if a non-linear term is included. We'd have to fit a model with and without non-linearity in `mcs` to know that.
+    + Non-linearity will often take the form of a product term, a polynomial term, or a restricted cubic spline.
+
+## Conclusions from Spearman $\rho^2$ Plot
+
+- `pcs`, also quantitative, has the next most potential predictive punch after `mcs`.
+- These are followed, in order, by `pss_fr` and `sex`.
+
+## Grim Reality
+
+With 453 observations (452 df) we should be thinking about models with modest numbers of regression inputs. 
+
+- Non-linear terms (polynomials, splines) just add to the problem, as they need additional df to be estimated.
+
+In this case, we might choose to include non-linear terms in just two or three variables (and that's it) and even that would be tough to justify with this modest sample size.
+
+## Contents of `spear_cesd`
+
+```{r}
+#| echo: true
+spear_cesd
+```
+
+## Proposed New Model
+
+Fit a model to predict `cesd` using:
+
+- a 5-knot spline on `mcs`
+- a 3-knot spline on `pcs`
+- a linear term on `pss_fr`
+- a linear term on `age`
+- an interaction of `sex` with the main effect of `mcs` (restricting our model so that terms that are non-linear in both `sex` and `mcs` are excluded), and
+- a main effect of `subst`
+
+## Our new model `mod_help2`
+
+Definitely more than we can reasonably do with 453 observations, but let's see how it looks.
+
+```{r}
+#| echo: true
+dd <- datadist(helpdat)
+options(datadist = "dd")
+
+mod_help2 <- ols(cesd ~ rcs(mcs, 5) + rcs(pcs, 3) + sex + 
+                mcs %ia% sex + pss_fr + age + subst, 
+            data = helpdat, x = TRUE, y = TRUE)
+```
+
+- `%ia%` tells R to fit an interaction term with `sex` and the main effect of `mcs`.
+    - We have to include `sex` as a main effect for the interaction term (`%ia%`) to work. We already have the main effect of `mcs` in as part of the spline.
+
+## Our fitted model `mod_help2`
+
+```{r}
+#| echo: true
+mod_help2
+```
+
+## ANOVA for this model
+
+Remember this ANOVA testing is sequential, other than the TOTALS.
+
+```{r}
+#| echo: true
+anova(mod_help2)
+```
+
+## Plotting ANOVA results for `mod_help2`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(anova(mod_help2))
+```
+
+## Validation of Summary Statistics
+
+```{r}
+#| echo: true
+set.seed(432); validate(mod_help2)
+```
+
+## `summary` results for `mod_help2`
+
+```{r}
+#| echo: true
+#| fig-height: 6
+plot(summary(mod_help2))
+```
+
+## `summary` results for `mod_help2`
+
+```{r}
+#| echo: true
+summary(mod_help2)
+```
+
+
+## Nomogram for `mod_help2`
+
+```{r}
+#| echo: true
+#| fig-height: 6
+plot(nomogram(mod_help2))
+```
+
+## Impact of non-linearity?
+
+```{r}
+#| echo: true
+#| fig-height: 5
+ggplot(Predict(mod_help2))
+```
+
+## Residuals vs. Fitted Values?
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(resid(mod_help2) ~ fitted(mod_help2))
+```
+
+## Checking the model's calibration
+
+```{r}
+#| echo: true
+#| fig-height: 5
+set.seed(432); plot(calibrate(mod_help2))
+```
+
+## Limitations of `lm` for fitting complex linear models
+
+We can certainly assess this big, complex model using `lm`, too:
+
+- with in-sample summary statistics like adjusted $R^2$, AIC and BIC,
+- we can assess its assumptions with residual plots, and 
+- we can also compare out-of-sample predictive quality through cross-validation,
+
+## We can/will use both `lm` and `ols`
+
+But to really delve into the details of how well this complex model works, and to help plot what is actually being fit, we'll probably want to fit the model using `ols`. 
+
+- In Project A, we expect some results that are most easily obtained using `lm` and others that are most easily obtained using `ols`.
+
+# Back to the `hers2` data
+
+## Kitchen Sink Model (Main Effects only)
+
+```{r}
+#| echo: true
+
+mod_ks <- ols(ldl ~ age + smoking + drinkany + sbp + 
+                physact + bmi, data = hers2)
+anova(mod_ks)
+```
+
+## Spearman $\rho^2$ Plot
+
+How should we prioritize the degrees of freedom we spend on non-linearity?
+
+- Note the use of the simple imputation `hers2` data here. Why?
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+plot(spearman2(ldl ~ age + smoking + drinkany + sbp + 
+                   physact + bmi, data = hers2))
+```
+
+## Spending Degrees of Freedom
+
+We're spending 9 degrees of freedom in our kitchen sink model. (We can verify this with `anova` or the plot.)
+
+- Each quantitative main effect costs 1 df to estimate
+- Each binary categorical variable also costs 1 df
+- Multi-categorical variables with L levels cost L-1 df to estimate
+
+Suppose we're willing to spend up to a total of **16** degrees of freedom (i.e. a combined 7 more on interaction terms and other ways to capture non-linearity.)
+
+## What did Spearman $\rho^2$ Plot show? {.smaller}
+
+Group 1 (largest adjusted $\rho^2$)
+
+- `bmi`, a quantitative predictor, is furthest to the right
+
+Group 2 (next largest)
+
+- `smoking`, a binary predictor, is next, followed closely by 
+- `age`, a quantitative predictor
+
+Other predictors (rest of the group)
+
+- `sbp`, quantitative
+- `drinkany`, binary
+- `physact`, multi-categorical (5 levels)
+
+## Impact of Adding Non-Linear Terms on Spent DF
+
+- Adding a polynomial of degree D costs D degrees of freedom.
+- Adding a restricted cubic spline with K knots costs K-1 df.
+- Adding an interaction (product term) where the predictors have df1 and df2 degrees of freedom, product term adds df1 $\times$ df2 degrees of freedom.
+    - When we use a quantitative variable in a spline *and* interaction, we'll do the interaction on the main effect, not the spline.
+
+## Model we'll fit with `ols`
+
+Fitting a model to predict `ldl` using
+
+- `bmi` with a restricted cubic spline, 5 knots
+- `age` with a quadratic polynomial
+- `sbp` as a linear term
+- `drinkany` indicator
+- `physact` factor
+- `smoking` indicator and its interaction with the main effect of `bmi`
+
+## Dealing with missing data?
+
+We can fit this to the data:
+
+- restricted to complete cases (`hers1`, effectively)
+- after simple imputation (`hers2`)
+- after our multiple imputation (`fit3`)
+
+# Using only the Complete Cases
+
+## Fitting to the complete cases
+
+```{r}
+#| echo: true
+
+d <- datadist(hers1)
+options(datadist = "d")
+
+m1 <- ols(ldl ~ rcs(bmi, 5) + pol(age, 2) + sbp + 
+              drinkany + physact + smoking + 
+              smoking %ia% bmi, data = hers1,
+          x = TRUE, y = TRUE)
+```
+
+where `%ia%` identifies the linear interaction alone.
+
+## `m1` results
+
+```{r}
+#| echo: true
+m1
+```
+
+# Using Single Imputation
+
+## Fitting after simple imputation
+
+```{r}
+#| echo: true
+dd <- datadist(hers2)
+options(datadist = "dd")
+
+m2 <- ols(ldl ~ rcs(bmi, 5) + pol(age, 2) + sbp + 
+              drinkany + physact + smoking + 
+              smoking %ia% bmi, data = hers2,
+          x = TRUE, y = TRUE)
+```
+
+where, again, `%ia%` identifies the linear interaction alone.
+
+## `m2` results
+
+```{r}
+#| echo: true
+m2
+```
+
+## ANOVA results for `m2` from `ols`
+
+```{r}
+#| echo: true
+anova(m2)
+```
+
+## Validation of summary statistics
+
+Complete cases only...
+
+```{r}
+#| echo: true
+set.seed(432001); validate(m1)
+```
+
+After single imputation...
+
+```{r}
+#| echo: true
+set.seed(432002); validate(m2)
+```
+
+## `summary(m2)` results
+
+```{r}
+#| echo: true
+summary(m2)
+```
+
+- Of course, these should really be plotted...
+
+## Effect Size Plot for `m2`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(summary(m2))
+```
+
+## Nomogram for `m2`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(nomogram(m2))
+```
+
+## Making Predictions for an Individual
+
+Suppose we want a prediction for a new individual subject with `bmi` = 30, `age` = 50, `smoking` = yes, `physact` = about as active, `drinkany`= yes and `sbp` of 150.
+
+```{r}
+#| echo: true
+predict(m2, expand.grid(bmi = 30, age = 50, sbp = 150, smoking = "yes",
+                        physact = "about as active", drinkany = "yes"),
+        conf.int = 0.95, conf.type = "individual")
+```
+
+This is called a *prediction interval*.
+
+## Predictions for a Long-Run Mean
+
+The other prediction we might make is for the *mean* of a series of subjects with the same predictor values...
+
+```{r}
+#| echo: true
+predict(m2, expand.grid(bmi = 30, age = 50, sbp = 150, smoking = "yes",
+                        physact = "about as active", drinkany = "yes"),
+        conf.int = 0.95, conf.type = "mean")
+```
+
+Note that the confidence interval will always be narrower than the prediction interval given the same predictor values.
+
+## Residuals vs. Fitted Values?
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(resid(m2) ~ fitted(m2))
+```
+
+
+## Influential Points?
+
+```{r}
+#| echo: true
+which.influence(m2, cutoff = 0.4)
+```
+
+# Using Multiple Imputation
+
+## Fitting after Multiple Imputation
+
+What do we have now?
+
+- An imputation model `fit3`
+
+```
+fit3 <- aregImpute(~ ldl + age + smoking + drinkany + sbp + 
+           physact + bmi, nk = c(0, 3:5), tlinear = FALSE,
+           data = hers1, B = 10, n.impute = 20, x = TRUE)
+```
+
+- A prediction model (from `m1` or `m2`)
+
+```
+ols(ldl ~ rcs(bmi, 5) + pol(age, 2) + sbp +
+          drinkany + physact + smoking + smoking %ia% bmi,
+          x = TRUE, y = TRUE)
+```
+
+Put them together with `fit.mult.impute()`...
+
+## Linear Regression & Imputation Model
+
+```{r}
+#| echo: true
+m3imp <- 
+    fit.mult.impute(ldl ~ rcs(bmi, 5) + pol(age, 2) + sbp +
+                        drinkany + physact + smoking + 
+                        smoking %ia% bmi,
+                    fitter = ols, xtrans = fit3, 
+                    data = hers1, pr = FALSE)
+```
+
+- When you run this without the `pr = FALSE` it generates considerable output related to the imputations, which we won't use today.
+- Let's look at the rest of the output this yields...
+
+## `m3imp` results
+
+```{r}
+#| echo: true
+m3imp
+```
+
+## ANOVA results for `m3imp`
+
+```{r}
+#| echo: true
+anova(m3imp)
+```
+
+## Effect Estimates for `m3imp`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(summary(m3imp))
+```
+
+## Effect Estimates for `m3imp`
+
+```{r}
+#| echo: true
+summary(m3imp)
+```
+
+## Evaluation via Partial $R^2$ and AIC
+
+```{r}
+#| echo: true
+
+par(mfrow = c(1,2))
+plot(anova(m3imp), what="partial R2")
+plot(anova(m3imp), what="aic")
+par(mfrow = c(1,1))
+```
+
+## Nomogram for `m3imp`
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(nomogram(m3imp))
+```
+
+## Residuals vs. Fitted Values
+
+```{r}
+#| echo: true
+#| fig-height: 5
+plot(resid(m3imp) ~ fitted(m3imp))
+```
+
+## More after `aregImpute`?
+
+- How can I estimate the AIC (and BIC) of a model fit with `fit.mult.impute`?
+
+`glance` won't work with an `ols` fit, but we can just use...
+
+```{r}
+#| echo: true
+AIC(m3imp)
+```
+
+```{r}
+#| echo: true
+BIC(m3imp)
+```
+
+## Viewing the `m3imp` effects?
+
+```{r}
+#| echo: true
+#| fig-height: 5
+ggplot(Predict(m3imp))
+```
+
+## Pull out one imputation?
+
+- How can I pull (say, the fifth) imputation from `aregImpute`? 
+
+`fit3` was our imputation model here, built on the `hers1` data, with subject identifiers in `subject`...
+
+```{r}
+#| echo: true
+imputed_5 <- impute.transcan(fit3, data = hers1, imputation = 5, 
+                             list.out = T, pr = F, check = F)
+
+imputed_df5 <- as.data.frame(do.call(cbind, imputed_5))
+
+fifth_imp <- bind_cols(subject = hers1$subject, imputed_df5) |>
+  tibble() |> mutate_if(is.character, as.factor) |>
+  mutate(subject = as.character(subject))
+```
+
+## Our `fifth_imp` tibble
+
+```{r}
+#| echo: true
+fifth_imp
+
+n_miss(fifth_imp)
+```
+
+
+## Model with `lm` for 5th imputation?
+
+```{r}
+#| echo: true
+model_for_imp5 <-
+  lm(ldl ~ rcs(bmi, 5) + pol(age, 2) + sbp +
+       drinkany + physact + smoking + 
+       smoking %ia% bmi, data = fifth_imp)
+
+model_for_imp5
+```
+
+## Checking `m3imp` in imputation 5
+
+```{r}
+#| echo: true
+glance(model_for_imp5) |>
+  gt() |> fmt_number(columns = r.squared:p.value, decimals = 3)
+
+anova(model_for_imp5) 
+```
+
+## Plot residuals for 5th imputation?
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(model_for_imp5, which = c(1:2))
+```
+
+## Plot residuals for 5th imputation?
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(model_for_imp5, which = c(3,5))
+```
+
+## Next Week
+
+Logistic Regression: Predicting a Binary Outcome
