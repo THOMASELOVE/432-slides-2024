@@ -158,6 +158,7 @@ mov23a |> filter(!complete.cases(metascore, gross)) |>
 For today, let's just drop the films with missing data.
 
 ```{r}
+#| echo: true
 mov23a <- mov23a |> drop_na()
 
 mov23a
@@ -248,7 +249,7 @@ $$
 Pr(event) = \frac{exp(logit(event))}{1 + exp(logit(event))}
 $$
 
-Here, our *event* will be "movie passes the bechdel-Wallace test" (`bechdel` = Pass)
+Here, our *event* will be "movie passes the Bechdel-Wallace test" (`bechdel` = Pass)
 
 ## Model `mod_1`
 
@@ -394,7 +395,7 @@ glance(mod_1) |>
 -   null model (intercept) has 186 residual df (`df.null`) with `null.deviance` of 255.3
 -   `mod_1` (includes age) has 185 residual df (`df.residual`) with `deviance` of 250.6
 -   Think of deviance quantifying what has not yet been explained by model
-    -   Our `mod_1` has deviance`= -2*log likelihood (`logLik\`)
+    -   Our `mod_1` has deviance = -2*log likelihood (`logLik`)
     -   These are the elements of the ANOVA tests we discussed
 -   `AIC` and `BIC` for comparing models for the same outcome, as in linear regression
 
