@@ -1,18 +1,8 @@
 ---
 title: "432 Class 08"
-author: Thomas E. Love, Ph.D.
+author: https://thomaselove.github.io/432-2024
 date: "2024-02-08"
-format:
-  revealjs: 
-    theme: default
-    embed-resources: true
-    self-contained: true
-    slide-number: true
-    footnotes-hover: true
-    preview-links: auto
-    date-format: iso
-    logo: 432-2024-pic.png
-    footer: "432 Class 08 | 2024-02-08 | <https://thomaselove.github.io/432-2024/>"
+format: docx
 ---
 
 ## Today's Agenda
