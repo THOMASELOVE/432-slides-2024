@@ -1,7 +1,7 @@
 ---
 title: "432 Class 09"
 author: https://thomaselove.github.io/432-2024
-date: "2024-02-12"
+date: "2024-02-13"
 format: docx
 ---
 

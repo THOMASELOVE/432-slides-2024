@@ -1,7 +1,7 @@
 ---
 title: "432 Class 09"
 author: Thomas E. Love, Ph.D.
-date: "2024-02-12"
+date: "2024-02-13"
 format:
   revealjs: 
     theme: dark
@@ -12,7 +12,7 @@ format:
     preview-links: auto
     date-format: iso
     logo: 432-2024-pic.png
-    footer: "432 Class 09 | 2024-02-12 | <https://thomaselove.github.io/432-2024/>"
+    footer: "432 Class 09 | 2024-02-13 | <https://thomaselove.github.io/432-2024/>"
 ---
 
 ## Today's Agenda, Part I
