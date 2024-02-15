@@ -1,0 +1,981 @@
+---
+title: "432 Class 10"
+author: Thomas E. Love, Ph.D.
+date: "2024-02-15"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 10 | 2024-02-15 | <https://thomaselove.github.io/432-2024/>"
+    execute: 
+      echo: true
+---
+
+
+## Today's Agenda
+
+Fitting and evaluating logistic regression models with `lrm`
+
+- The Framingham example
+    - Outcome: `chd10` = Developed coronary heart disease in next 10 years?
+- Use `lrm` to model `chd10` using four predictors
+    - on the complete cases (`fram_cc`)
+    - accounting for missingness via single imputation 
+    - accounting for missingness via multiple imputation
+- Consider adding non-linear terms, refit and re-evaluate
+
+## Today's R Setup
+
+```{r}
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(cutpointr) ## NEW: specifies "optimal" cutpoints
+library(caret)  ## for creating a confusion matrix
+library(pROC)   ## should come after cutpointr
+library(ROCR)   ## NEW: alternative to pROC for plotting ROC curves
+library(janitor)
+library(broom)
+library(naniar)
+library(mice)   ## we'll use for single imputation today
+library(rms)    ## also (automatically) loads Hmisc
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+# The "Framingham" Data
+
+## The Data
+
+```{r}
+fram_raw <- read_csv("c10/data/framingham.csv", 
+                     show_col_types = FALSE) |>
+    clean_names() 
+```
+
+See <https://www.framinghamheartstudy.org/> for more details. 
+
+- The variables describe n = `r nrow(fram_raw)` adults examined at baseline, then followed for 10 years to see if they developed incident coronary heart disease. 
+- This particular data set is purportedly from the Framingham study.
+
+## Today's Six Variables
+
+Data management for these variables shown in next slide.
+
+Variable | Description
+:------: | --------------------------------------------------
+`subj_id` | identifying code added by Dr. Love
+`chd10` | 1 = coronary heart disease in next 10 years, else 0
+`educ` | four-level factor: educational attainment
+`glucose` | blood glucose level in mg/dl
+`sbp` | systolic blood pressure (mm Hg)
+`smoker` | 1 = current smoker at time of examination, else 0
+
+## Data Cleanup
+
+```{r}
+fram_orig <- fram_raw |>
+    mutate(educ = 
+               fct_recode(factor(education), 
+                          "Some HS" = "1",
+                          "HS grad" = "2",
+                          "Some Coll" = "3",
+                          "Coll grad" = "4")) |>
+    rename(smoker = "current_smoker",
+           cigs = "cigs_per_day",
+           stroke = "prevalent_stroke",
+           highbp = "prevalent_hyp",
+           chol = "tot_chol",
+           sbp = "sys_bp", dbp = "dia_bp",
+           hrate = "heart_rate",
+           chd10 = "ten_year_chd") |>
+    select(subj_id, chd10, educ, glucose, sbp, smoker,
+           everything()) |> select(-education)
+```
+
+## Other 11 variables in `fram_orig` {.smaller}
+
+Variable | Description
+-------: | ------------------------------------------------
+`male` | 1 = subject is male, else 0
+`age` | in years (range is 32 to 70)
+`cigs`  | number of cigarettes smoked per day
+`bp_meds` | 1 = using anti-hypertensive medication
+`stroke` | 1 = history of stroke, else 0
+`highbp` | 1 = under treatment for hypertension, else 0
+`diabetes` | 1 = history of diabetes, else 0
+`chol` | total cholesterol (mg/dl)
+`dbp` | diastolic blood pressure (mm Hg)
+`bmi` | body mass index in $kg/m^2$
+`hrate` | heart rate in beats per minute
+
+## Missing Data?
+
+Our outcome `chd10` has no missing values.
+
+```{r}
+fram_orig |> tabyl(chd10) |> adorn_pct_formatting(digits = 1)
+```
+
+- `r n_case_complete(fram_orig)` (`r round(pct_complete_case(fram_orig),1)`%) of the `r nrow(fram_orig)` subjects in `fram_orig` are complete. 
+- The remaining `r n_case_miss(fram_orig)` observations have something missing.
+
+```{r}
+n_case_complete(fram_orig); pct_complete_case(fram_orig)
+```
+
+## Counts of Missing Data, by Variable
+
+```{r}
+miss_var_summary(fram_orig) |> 
+    filter(n_miss > 0)
+```
+
+While the only four predictors we'll use today for `chd10` are `educ`, `glucose`, `sbp` and `smoke`, we'll impute all of the missing values, using the complete set of 17 variables.
+
+## Imputation via `mice`
+
+We need to impute:
+
+- 5 quantities (`glucose`, `bmi`, `cigs`, `chol` and `hrate`)
+- 1 binary variable (`bp_meds`), and
+- 1 multi-categorical variable (`educ`)
+
+We have missing data in `r round_half_up(pct_miss_case(fram_orig),1)`% of our observations, so we'll use `mice` to create 15 imputed data sets, and then save one of them as our "single imputation" tibble.
+
+```{r}
+set.seed(432432)
+fram_mice15 <- mice(fram_orig, m = 15, printFlag = FALSE)
+```
+
+## Store 12th imputation as `fram_si`
+
+```{r}
+fram_si <- complete(fram_mice15, 12) |> tibble()
+
+n_miss(fram_si)
+fram_si
+```
+
+## Check multi-categorical imputation?
+
+```{r}
+fram_orig |> tabyl(educ) |> adorn_pct_formatting()
+fram_si |> tabyl(educ) |> adorn_pct_formatting()
+```
+
+Do the imputed values seem like reasonable choices?
+
+## Data Sets for today's analyses
+
+```{r}
+fram_start <- fram_orig |> 
+  select(subj_id, chd10, glucose, smoker, sbp, educ)
+
+fram_cc <- fram_start |>
+  drop_na()
+
+fram_si <- fram_si  |> 
+  select(subj_id, chd10, glucose, smoker, sbp, educ)
+```
+
+- `fram_start` contains `r nrow(fram_start)` rows and the `r ncol(fram_start)` columns we'll use, with `r n_miss(fram_start$glucose)` rows missing `glucose` and `r n_miss(fram_start$educ)` missing `educ`.
+- `fram_cc`: (complete cases) includes only the `r nrow(fram_cc)` complete rows for our `r ncol(fram_cc)` columns.
+- `fram_si`: singly imputed to yield `r nrow(fram_si)` rows on our `r ncol(fram_si)` columns with complete data.
+
+## Modeling Plan
+
+Use `lrm` to fit a four-predictor logistic regression model to predict `chd10` using `glucose`, `smoker`, `sbp` and `educ`
+
+1. Using the complete cases (`fram_cc`)
+2. Accounting for missingness via single imputation (`fram_si`)
+3. Accounting for missingness via multiple imputation, via `aregImpute()`
+
+Then, we'll consider adding several non-linear terms to the "four-predictor" models, and refit.
+
+# Fitting a Four-Predictor Model using Complete Cases
+
+## A "Four Predictor" model
+
+First, we'll use the `fram_cc` data to perform a complete-case analysis and fix ideas.
+
+```{r}
+d <- datadist(fram_cc)
+options(datadist = "d")
+
+mod_cc <- lrm(chd10 ~ glucose + smoker + sbp + educ,
+            data = fram_cc, x = TRUE, y = TRUE)
+```
+
+This works very nicely when `chd10` = 1 (for Yes) or 0 (for No), as it does here. What if your outcome was actually a factor with values Yes and No? Use the following...
+
+```
+mod_cc <- lrm((outcome == "Yes") ~ 
+                  glucose + smoker + sbp + educ,
+            data = fram_cc, x = TRUE, y = TRUE)
+```
+
+## Main Output for `mod_cc`
+
+```{r}
+mod_cc
+```
+
+## Deconstructing `mod_cc` summaries, 1
+
+```
+Logistic Regression Model
+lrm(formula = chd10 ~ glucose + smoker + sbp + educ, data = fram_cc, 
+    x = TRUE, y = TRUE)
+
+Obs = 3753  0 = 3174  1 = 579             max |deriv| 2e-11
+```
+
+- `Obs` = Observations used to fit model, with `0` = the # of zeros and `1` = the # of ones in our outcome, `chd10`. 
+- `max |deriv|` is the maximum absolute value of the derivative at the point where the maximum likelihood function was estimated. 
+    - All we care about is whether the iterative function-fitting process converged, and R will warn you if it doesn't.
+
+## Deconstructing `mod_cc` summaries, 2
+
+```
+Model Likelihood Ratio Test: LR chi2 = 223.29, d.f. = 6    Pr(> chi2) <0.0001       
+```
+
+- This is a global likelihood ratio test (drop in deviance test.)
+- Likelihood Ratio $\chi^2$ = null deviance - residual deviance
+    - d.f. = null d.f. - residual d.f., so `mod_cc` uses 6 df.
+- Pr(> chi2) is a *p* value obtained from comparison to a $\chi^2$ distribution with appropriate d.f.
+    - The null hypothesis (that the model has no predictive value at all) is rarely of practical interest.
+
+## Deconstructing `mod_cc` summaries, 3
+
+```
+               Coef    S.E.   Wald Z Pr(>|Z|)
+Intercept      -5.5622 0.3217 -17.29 <0.0001 
+glucose         0.0081 0.0016   4.93 <0.0001 
+smoker          0.3126 0.0955   3.27 0.0011  
+sbp             0.0237 0.0020  12.05 <0.0001 
+educ=HS grad   -0.4674 0.1157  -4.04 <0.0001 
+educ=Some Coll -0.3924 0.1423  -2.76 0.0058  
+educ=Coll grad -0.1356 0.1549  -0.88 0.3815  
+```
+
+- How does each predictor appear to relate to 10-year risk?
+    - Which is the baseline `educ` category?
+    - Remember that these estimates are on the logit scale.
+
+## Plot of Effects using `mod_cc`
+
+```{r, fig.height = 5}
+
+
+plot(summary(mod_cc))
+```
+
+## Effect Size Summary for `mod_cc`
+
+```{r}
+summary(mod_cc)
+```
+
+## Predict results for `mod_cc`
+
+```{r, fig.height = 5}
+ggplot(Predict(mod_cc, fun = plogis))
+```
+
+## Deconstructing `mod_cc` summaries, 4
+
+```
+Discrimination Indexes     Rank Discrimination Indexes    
+R2             0.100       C       0.682    
+R2(6,3753)     0.056       Dxy     0.363    
+R2(6,1469)     0.137       gamma   0.364    
+Brier          0.122       tau-a   0.095    
+```
+
+The main things we'll care about are:
+
+- Nagelkerke $R^2$, symbolized `R2` here.
+- The Brier score, symbolized `Brier`.
+- The area under the ROC curve, or C statistic, shown as `C`.
+- Somers' d statistic, symbolized `Dxy` here.
+
+Let's walk through each of those, in turn.
+
+## Key Indexes (Nagelkerke $R^2$)
+
+- The Nagelkerke $R^2$ reaches 1 if the fitted model shows as much improvement as possible over the null model (which just predicts the mean response on the 0-1 scale for all subjects).
+- Nagelkerke $R^2$ is 0 for the null model, and is larger (closer to 1) as the fitted model improves, although it's criticized for being misleadingly high, 
+- A Nagelkerke $R^2$ value of 0.100 doesn't mean 10% of anything.
+
+Here, Nagelkerke $R^2$ = 0.100 indicates fairly low quality of fit.
+
+## An Alternative: McFadden's $R^2$
+
+McFadden R-square = 1 minus the ratio of (the model deviance over the deviance for the null model.) 
+
+- To obtain this for our `mod_cc` run with `lrm`, use:
+
+```{r}
+1 - (mod_cc$deviance[2] / mod_cc$deviance[1])
+```
+
+- This McFadden $R^2$ corresponds well to the proportionate reduction in error interpretation of an $R^2$, if that's all you need.
+
+## Key Indexes (Brier Score = 0.122) {.smaller}
+
+- The lower the Brier score, the better the predictions are calibrated. 
+- The maximum (worst) score is 1, the best is 0.
+
+From Wikipedia: Suppose you forecast the probability P that it will rain tomorrow.
+
+- If the forecast is P = 1 (100%) and it rains, the Brier Score is 0.
+- If the forecast is P = 1 (100%) and it doesn't rain, the Brier Score is 1.
+- If the forecast is P = 0.7 and it rains, Brier = $(0.70 - 1)^2 = 0.09$.
+- If the forecast is P = 0.3 and it rains, Brier = $(0.30 - 1)^2 = 0.49$.
+- If the forecast is P = 0.5, the Brier score is $(0.50 - 1)^2 = 0.25$ regardless of whether it rains.
+
+## Is collinearity a problem?
+
+```{r}
+rms::vif(mod_cc)
+```
+
+
+## Receiver Operating Characteristic Curve Analysis
+
+One way to assess the predictive accuracy within the model development sample in a logistic regression is to consider analyses based on the receiver operating characteristic (ROC) curve. ROC curves are commonly used in assessing diagnoses in medical settings, and in signal detection applications.
+
+The accuracy of a test can be evaluated by considering two types of errors: false positives and false negatives.
+
+## C = 0.682 (area under ROC curve) {.smaller}
+
+The C statistic and Somers' d (Dxy) are connected:
+
+$$
+C = 0.5 + \frac{d}{2}, d = 2(C - .5)
+$$
+
+The C statistic ranges from 0 to 1.
+
+- C = 0.5 describes a prediction that is exactly as good as random guessing
+- C = 1 indicates a perfect prediction model, one that guesses "yes" for all patients with `chd10` = 1 and which guesses "no" for all patients with `chd10` = 0.
+- Most of the time, the closer to 1, the happier we are:
+    - $C \geq 0.8$ usually indicates a moderately strong model (good discrimination)
+    - $C \geq 0.9$ indicates a very strong model (excellent discrimination)
+
+So 0.682 isn't good.
+
+## ROC Curve for our `mod_cc`
+
+```{r}
+#| echo: false
+## requires ROCR package
+prob <- predict(mod_cc, type="fitted")
+pred <- prediction(prob, fram_cc$chd10)
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+auc <- performance(pred, measure="auc")
+
+auc <- round(auc@y.values[[1]],3)
+roc.data <- data.frame(fpr=unlist(perf@x.values),
+                       tpr=unlist(perf@y.values),
+                       model="GLM")
+
+ggplot(roc.data, aes(x=fpr, ymin=0, ymax=tpr)) +
+    geom_ribbon(alpha=0.2, fill = "blue") +
+    geom_line(aes(y=tpr), col = "blue") +
+    geom_abline(intercept = 0, slope = 1, lty = "dashed") +
+    labs(title = paste0("mod_cc: ROC Curve w/ AUC=", auc))
+```
+
+## Code for Previous Slide
+
+```
+## requires ROCR package
+prob <- predict(mod_cc, type="fitted")
+pred <- prediction(prob, fram_cc$chd10)
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+auc <- performance(pred, measure="auc")
+
+auc <- round(auc@y.values[[1]],3)
+roc.data <- data.frame(fpr=unlist(perf@x.values),
+                       tpr=unlist(perf@y.values),
+                       model="GLM")
+
+ggplot(roc.data, aes(x=fpr, ymin=0, ymax=tpr)) +
+    geom_ribbon(alpha=0.2, fill = "blue") +
+    geom_line(aes(y=tpr), col = "blue") +
+    geom_abline(intercept = 0, slope = 1, lty = "dashed") +
+    labs(title = paste0("Model A: ROC Curve w/ AUC=", auc))
+```
+
+## ROC Curve for `glucose` only model
+
+```{r}
+#| echo: false
+d <- datadist(fram_cc)
+options(datadist = "d")
+
+mod_glucose <- lrm(chd10 ~ glucose,
+            data = fram_cc, x = TRUE, y = TRUE)
+
+## requires ROCR package
+prob <- predict(mod_glucose, type="fitted")
+pred <- prediction(prob, fram_cc$chd10)
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+auc <- performance(pred, measure="auc")
+
+auc <- round(auc@y.values[[1]],3)
+roc.data <- data.frame(fpr=unlist(perf@x.values),
+                       tpr=unlist(perf@y.values),
+                       model="GLM")
+
+ggplot(roc.data, aes(x=fpr, ymin=0, ymax=tpr)) +
+    geom_ribbon(alpha=0.2, fill = "blue") +
+    geom_line(aes(y=tpr), col = "blue") +
+    geom_abline(intercept = 0, slope = 1, lty = "dashed") +
+    labs(title = paste0("glucose only Model: ROC Curve w/ AUC=", auc))
+```
+
+## Validated Summaries for `mod_cc`
+
+- Correcting for over-optimism through bootstrap validation, with 50 resamples. 
+- We'll focus on C (recall C = 0.5 + Dxy/2), R2 and B (Brier).
+
+```{r}
+set.seed(4321); validate(mod_cc, B = 50)
+```
+
+## Nomogram for `mod_cc`
+
+```{r}
+#| fig-height: 5
+plot(nomogram(mod_cc, fun = plogis, funlabel = "Pr(10-year CHD)"))
+```
+
+# Using the Singly Imputed Data to fit the 4-predictor Model
+
+## Fit `mod_si` after single imputation
+
+```{r}
+d <- datadist(fram_si)
+options(datadist = "d")
+
+mod_si <- lrm(chd10 ~ glucose + smoker + sbp + educ,
+            data = fram_si, x = TRUE, y = TRUE)
+
+mod_si
+```
+
+## Comparing the Coefficients (exponentiated)
+
+- Comparing the slopes as odds ratios
+
+```{r}
+round_half_up(exp(mod_cc$coefficients),3)
+```
+
+```{r}
+round_half_up(exp(mod_si$coefficients),3)
+```
+
+## Comparing Model Summaries
+
+Summary | `mod_si` | `mod_cc` 
+:-------: | -------: | -------:
+Obs | 4238 | 3753
+0 | 3594 | 3174
+1 | 644 | 579
+Nagelkerke $R^2$ | 0.095 | 0.100
+Brier Score | 0.121 | 0.122
+C | 0.676 | 0.682
+Dxy | 0.353 | 0.363
+
+## Validate `mod_si` Summary Statistics
+
+```{r}
+set.seed(4322); validate(mod_si, B = 50)
+```
+
+- Since $C = 0.5 + \frac{Dxy}{2}$, validated C = 0.5 + (.3527/2) = 0.676
+
+## Plot of Effects using `mod_si`
+
+```{r}
+#| fig-height: 4.5
+plot(summary(mod_si))
+```
+
+## Predict results for `mod_si`
+
+```{r}
+#| fig-height: 4.5
+ggplot(Predict(mod_si, fun = plogis))
+```
+
+## Nomogram for `mod_si`
+
+```{r}
+#| fig-height: 4.5
+plot(nomogram(mod_si, fun = plogis,
+            fun.at = c(0.05, seq(0.1, 0.9, by = 0.1), 0.95),
+            funlabel = "Pr(CHD)"))
+```
+
+- `fun.at` used to show us specific Pr(CHD) cutpoints
+
+## Fit with `glm()` instead?
+
+```{r}
+mod_si_glm <- glm(chd10 ~ glucose + smoker + sbp + educ,
+                  data = fram_si, family = binomial(link = "logit"))
+
+mod_si_glm
+```
+
+## `glance` and `tidy` for `mod_si_glm`
+
+```{r}
+glance(mod_si_glm)
+
+tidy(mod_si_glm, conf.int = TRUE, conf.level = 0.90)
+```
+
+## Confusion Matrix for `mod_si_glm`
+
+```{r}
+mod_si_aug <- augment(mod_si_glm, type.predict = "response")
+
+cm_si <- confusionMatrix(
+  data = factor(mod_si_aug$.fitted >= 0.5),
+  reference = factor(mod_si_aug$chd10 == 1),
+  positive = "TRUE")
+
+cm_si
+```
+
+## Maximize Sensitivity + Specificity?
+
+```{r}
+cp <- cutpointr(data = mod_si_aug, .fitted, chd10, 
+                method = maximize_metric, metric = sum_sens_spec)
+
+summary(cp)
+```
+
+## Plotting the `cutpointr` results
+
+```{r}
+plot(cp)
+```
+
+## Confusion Matrix for `mod_si_glm`
+
+- "Optimized" Rule: Predict CHD = 1 if `.fitted` $\geq$ .1485
+
+```{r}
+mod_si_aug <- augment(mod_si_glm, type.predict = "response")
+
+cm_si_opt <- confusionMatrix(
+  data = factor(mod_si_aug$.fitted >= 0.1485),
+  reference = factor(mod_si_aug$chd10 == 1),
+  positive = "TRUE")
+
+cm_si_opt
+```
+
+
+
+# Using Multiple Imputation: The 4-predictor Model
+
+## Fit the Imputation Model first
+
+We'll use `aregImpute` here, and create 20 imputed sets. 
+
+- These imputations use only the 6 variables in our `chd_10` models.
+
+```{r}
+set.seed(432123)
+dd <- datadist(fram_start)
+options(datadist = "dd")
+
+fit_imp <- 
+    aregImpute(~ chd10 + glucose + smoker + sbp + educ, 
+               nk = c(0, 3:5), tlinear = FALSE, data = fram_start,
+               B = 10, n.impute = 20, pr = FALSE)
+```
+
+- `fram_start` includes just our 6 variables (plus `subj_id`) and includes missing `glucose` and `educ`.
+
+## Imputation Results
+
+```{r}
+fit_imp
+```
+
+## Multiply Imputed Values
+
+```{r}
+par(mfrow=c(1,2)); plot(fit_imp); par(mfrow = c(1,1))
+```
+
+## Needs for multiple imputation
+
+- Appropriate `datadist` including missing values (`fram_start`)
+
+- Imputation Model
+
+```
+fit_imp <- 
+    aregImpute(~ chd10 + glucose + smoker + sbp + educ, 
+               nk = c(0, 3:5), tlinear = FALSE, data = fram_orig,
+               B = 10, n.impute = 20, pr = FALSE)
+```
+
+- Outcome Model will be of the following form, based on `mod_cc`...
+
+```
+lrm(chd10 ~ glucose + smoker + sbp + educ, x = TRUE, y = TRUE)
+```
+
+## Fitting `mod_mi`
+
+```{r}
+mod_mi <- 
+    fit.mult.impute(chd10 ~ glucose + smoker + sbp + educ,
+                    fitter = lrm, xtrans = fit_imp, 
+                    data = fram_start, 
+                    fitargs = list(x = TRUE, y = TRUE), pr = FALSE)
+```
+
+- `data = fram_start` (which includes NA values)
+- `xtrans = fit_imp` (results from multiple imputation)
+- `fitter = lrm` (we could actually use `glm` too, with different `fitargs`)
+- `pr = FALSE` avoids a long printout we don't need
+
+## Model `mod_mi` (using 20 imps.)
+
+```{r}
+mod_mi
+```
+
+
+## Comparing the Coefficients (exponentiated)
+
+- I'll just compare the two models using imputation...
+
+```{r}
+round_half_up(exp(mod_mi$coefficients),3)
+```
+
+```{r}
+round_half_up(exp(mod_si$coefficients),3)
+```
+
+## Plot of Effects using `mod_mi`
+
+```{r}
+#| fig-height: 4.5
+plot(summary(mod_mi))
+```
+
+## Summaries Comparing 3 Approaches
+
+Summary | `mod_mi` | `mod_si` | `mod_cc`
+:-----------: | -------: | -------: | -------:
+Obs | 4238 | 4238 | 3753
+0 | 3594 | 3594 | 3174
+1 | 644 | 644 | 579
+Nagelkerke $R^2$ | 0.095 | 0.095 | 0.100
+Brier Score | 0.121 | 0.121 | 0.122
+C | 0.677 | 0.676 | 0.682
+Dxy | 0.353 | 0.353 | 0.363
+
+- What might cause these to look meaningfully different?
+
+## Validate `mod_mi` Summary Statistics
+
+```{r}
+set.seed(4323)
+validate(mod_mi, B = 50)
+```
+
+- Optimism-corrected C = 0.5 + (0.3533/2) = 0.677
+
+## Predict results for `mod_mi`
+
+```{r}
+#| fig-height: 4.5
+ggplot(Predict(mod_mi, fun = plogis))
+```
+
+## Is collinearity a problem?
+
+```{r}
+rms::vif(mod_mi)
+```
+
+## Nomogram for `mod_mi`
+
+```{r}
+#| fig-height: 4.5
+plot(nomogram(mod_si, fun = plogis,
+            fun.at = c(0.05, seq(0.1, 0.9, by = 0.1), 0.95),
+            funlabel = "Pr(CHD)"))
+```
+
+
+# Considering Non-Linear Terms
+
+## Spearman $\rho^2$ Plot (using `fram_si`)
+
+```{r}
+#| fig-height: 4.5
+plot(spearman2(chd10 ~ glucose + smoker + sbp + educ, data = fram_si))
+```
+
+## Adding some non-linear terms
+
+- We'll add a restricted cubic spline with 5 knots in `sbp`
+- and an interaction between the `educ` factor and the linear effect of `sbp`,
+- and a quadratic polynomial in `glucose`
+
+to our main effects model, just to show how to do them...
+
+- I'll just show the results including the multiple imputation, since if you can get those, you should have little difficulty instead applying the single imputation or the complete case analysis.
+
+## `mod_big` using 20 imputations
+
+- `mod_big` incorporates our non-linear terms.
+
+```{r}
+mod_big <- 
+    fit.mult.impute(
+      chd10 ~ rcs(sbp, 5) + pol(glucose, 2) + 
+                smoker + educ + educ %ia% sbp,
+      fitter = lrm, xtrans = fit_imp, 
+      data = fram_start, fitargs = list(x = TRUE, y = TRUE),
+      pr = FALSE)
+```
+
+## Results of `mod_big`
+
+```{r}
+mod_big
+```
+
+
+## `mod_big` with robust sandwich variance estimates
+
+Here we add `robust = TRUE` to get robust sandwich variance estimates into Rubin's rule for combining our imputations.
+
+```{r}
+mod_bigr <- 
+    fit.mult.impute(
+      chd10 ~ rcs(sbp, 5) + pol(glucose, 2) + 
+                smoker + educ + educ %ia% sbp,
+      fitter = lrm, xtrans = fit_imp, robust = TRUE,
+      data = fram_start, fitargs = list(x = TRUE, y = TRUE),
+      pr = FALSE)
+```
+
+## Results using Robust SEs
+
+```{r}
+mod_bigr
+```
+
+## Impact of Robust Estimates
+
+- No changes to anything above the coefficients (Likelihood Ratio Test, Discrimination or Rank Discrimination Indexes)
+
+```
+                     mod_big                  mod_big_r
+                     Coef    S.E.   Pr(>|Z|)  Coef    S.E.   Pr(>|Z|)
+Intercept            -3.2433 2.1149 0.1251    -3.2433 2.3538 0.1682  
+sbp                   0.0033 0.0190 0.8635     0.0033 0.0211 0.8773
+sbp'                  0.1772 0.1837 0.3349     0.1772 0.2000 0.3758
+sbp''                -0.5110 0.6403 0.4248    -0.5110 0.6849 0.4556
+sbp'''                0.3704 0.6493 0.5684     0.3704 0.6805 0.5863
+glucose               0.0061 0.0052 0.2438     0.0061 0.0057 0.2853
+glucose^2             0.0000 0.0000 0.6622     0.0000 0.0000 0.7013
+smoker                0.3205 0.0903 0.0004     0.3205 0.0901 0.0004
+educ=HS grad         -0.4241 0.6397 0.5073    -0.4241 0.6359 0.5048
+educ=Some Coll       -1.4303 0.8104 0.0776    -1.4303 0.8061 0.0760
+educ=Coll grad       -1.0843 0.9401 0.2487    -1.0843 0.9791 0.2681
+educ=HS grad * sbp   -0.0003 0.0045 0.9548    -0.0003 0.0045 0.9544
+educ=Some Coll * sbp  0.0082 0.0057 0.1541     0.0082 0.0057 0.1525
+educ=Coll grad * sbp  0.0073 0.0068 0.2799     0.0073 0.0071 0.3017
+```
+
+## `mod_big` vs. `mod_mi` comparison
+
+Summary | `mod_big` | `mod_mi` 
+-------: | -------: | -------: 
+Obs | 4238 | 4238
+0 | 3594 | 3594
+1 | 644 | 644
+Nagelkerke $R^2$ | 0.097 | 0.095 
+Brier Score | 0.120 | 0.121
+C | 0.678 | 0.677
+Dxy | 0.357 | 0.353
+
+## ROC Curve for `mod_big`
+
+```{r}
+#| echo: false
+prob <- predict(mod_big, type="fitted")
+pred <- prediction(prob, fram_orig$chd10)
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+auc <- performance(pred, measure="auc")
+
+auc <- round(auc@y.values[[1]],3)
+roc.data <- data.frame(fpr=unlist(perf@x.values),
+                       tpr=unlist(perf@y.values),
+                       model="GLM")
+
+ggplot(roc.data, aes(x=fpr, ymin=0, ymax=tpr)) +
+    geom_ribbon(alpha=0.2, fill = "blue") +
+    geom_line(aes(y=tpr), col = "blue") +
+    geom_abline(intercept = 0, slope = 1, lty = "dashed") +
+    labs(title = paste0("Big Model: ROC Curve w/ AUC=", auc))
+```
+
+## ANOVA for the big fit?
+
+- How many df did we add in non-linear + interaction terms?
+
+```{r}
+anova(mod_big)
+```
+
+## Is collinearity involved now?
+
+```{r}
+rms::vif(mod_big)
+```
+
+## Validate `mod_big` Summary Statistics
+
+```{r}
+set.seed(4324); validate(mod_big, B = 50)
+```
+
+- Optimism-Corrected C = 0.5 + (.3442/2) = .672
+
+## Plot of Effects using `mod_big`
+
+```{r}
+plot(summary(mod_big))
+```
+
+## Predict results for `mod_big`
+
+```{r}
+#| fig-height: 4.5
+ggplot(Predict(mod_big, fun = plogis))
+```
+
+## Nomogram for `mod_big`
+
+```{r}
+#| fig-height: 5
+plot(nomogram(mod_big, fun = plogis, funlabel = "Pr(CHD)"))
+```
+
+## `glm()` fit with `aregImpute()`?
+
+```{r}
+mod_big_glm <- 
+    fit.mult.impute(
+      chd10 ~ rcs(sbp, 5) + pol(glucose, 2) + 
+                smoker + educ + educ %ia% sbp,
+      fitter = glm, xtrans = fit_imp, 
+      data = fram_start, 
+      fitargs = list(family = binomial(link = "logit")),
+      pr = FALSE)
+```
+
+## Results for `mod_big_glm`
+
+```{r}
+mod_big_glm
+```
+
+## `glance` and `tidy` results
+
+```{r}
+glance(mod_big_glm)
+
+tidy(mod_big_glm, exponentiate = TRUE, 
+     conf.int = TRUE, conf.level = 0.90)
+```
+
+## ROC for `mod_big_glm`?
+
+```{r}
+predict.prob1 <- predict(mod_big_glm, type = "response")
+roc1 <- pROC::roc(mod_big_glm$data$chd10, predict.prob1)
+roc1
+```
+
+## Plotting the ROC curve
+
+```{r}
+plot(roc1, main = "ROC Curve: mod_big_glm", lwd = 2, col = "navy")
+legend('bottomright', legend = paste("AUC: ", 
+                                     round_half_up(auc(roc1),4)))
+```
+
+## Confusion Matrix
+
+```{r}
+mod_big_aug <- augment(mod_big_glm, type.predict = "response")
+
+cm2 <- confusionMatrix(
+  data = factor(mod_big_aug$.fitted >= 0.5),
+  reference = factor(mod_big_aug$chd10 == 1),
+  positive = "TRUE")
+
+cm2
+```
+
+## Maximize Sensitivity + Specificity
+
+```{r}
+cp2 <- cutpointr(data = mod_big_aug, .fitted, chd10, 
+                method = maximize_metric, metric = sum_sens_spec)
+
+summary(cp2)
+```
+
+## Confusion Matrix at .fitted >= .143
+
+```{r}
+mod_big_aug <- augment(mod_big_glm, type.predict = "response")
+
+cm_new <- confusionMatrix(
+  data = factor(mod_big_aug$.fitted >= 0.143),
+  reference = factor(mod_big_aug$chd10 == 1),
+  positive = "TRUE")
+
+cm_new
+```
+
+
+## Next Time
+
+Back to Linear Regression
+
+- Variable (Feature) Selection in Linear Regression
+- Ridge Regression and the Lasso
+
+
