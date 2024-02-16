@@ -1,0 +1,337 @@
+---
+title: "432 Class 12"
+author: Thomas E. Love, Ph.D.
+date: "2024-02-22"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 12 | 2024-02-22 | <https://thomaselove.github.io/432-2024/>"
+---
+
+
+## Today's Agenda
+
+- Using `caret` to help with k-fold cross validation
+- Building a Table One
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(janitor)
+library(broom)
+library(caret)
+library(tableone)
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+# K-Fold Cross-Validation
+
+## Tiny Data Set for a Linear Model
+
+The `maleptsd` file contains information on PTSD (post traumatic stress disorder) symptoms following childbirth for 64 fathers^[Source: Ayers et al. 2007 *J Reproductive and Infant Psychology*. The data are described in more detail in Wright DB and London K (2009) *Modern Regression Techniques Using R* Sage Publications.].  
+
+```{r}
+#| echo: true
+maleptsd <- read_csv("c12/data/maleptsd.csv", show_col_types = FALSE) |> 
+  clean_names() |>
+  mutate(ptsd = log(ptsd_raw + 1)) |>
+  relocate(ptsd, .after = id)
+```
+
+`ptsd`, the response, measures PTSD symptoms, and we have 10 candidate predictors for that response.
+
+## The maleptsd data
+
+```{r}
+#| echo: true
+
+maleptsd
+```
+
+
+## More predictors than we can handle
+
+Only 64 observations and 10 potential predictors. 
+
+- Suppose we decide to try 5 of the predictors, specifically `over3`, `bond`, `neg`, `sup` and `aff`.
+
+```{r}
+#| echo: true
+m1 <- lm(ptsd ~ over3 + bond + neg + sup + aff, data = maleptsd)
+
+glance(m1) |> select(r2 = r.squared, adjr2 = adj.r.squared, AIC, BIC)
+```
+
+- Note nominal $R^2$ of 0.260.
+
+## Set up five-fold cross-validation
+
+Use the **caret** package's `trainControl()` function
+
+```{r}
+#| echo: true
+set.seed(4322024)
+ctrl <- trainControl(method = "cv", number = 5)
+```
+
+Next, we train our model on those five folds:
+
+```{r}
+#| echo: true
+
+ptsd_mod <- train(ptsd ~ over3 + bond + neg + sup + aff,
+                  data = maleptsd, method = "lm", 
+                  trControl = ctrl)
+```
+
+Results on next slide.
+
+## `ptsd_mod` results
+
+```{r}
+#| echo: true
+
+ptsd_mod
+```
+
+- Compare this to the nominal $R^2$ we saw earlier of 0.2604.
+
+## A New Model with Two Predictors
+
+Perhaps we can justify a two-predictor model.
+
+```{r}
+#| echo: true
+m2 <- lm(ptsd ~ aff + neg, data = maleptsd)
+
+glance(m2) |> select(r2 = r.squared, adjr2 = adj.r.squared, AIC, BIC) 
+```
+
+## Train new model on same 5 folds
+
+```{r}
+#| echo: true
+
+ptsd_mod2 <- train(ptsd ~ neg + aff, data = maleptsd, 
+                   method = "lm", trControl = ctrl)
+
+ptsd_mod2
+```
+
+## Model Summaries within each fold
+
+```{r}
+#| echo: true
+ptsd_mod2$resample
+```
+
+## Final Model from cross-validation
+
+```{r}
+#| echo: true
+
+ptsd_mod2$finalModel
+
+glance(ptsd_mod2$finalModel) |>
+  select(r2 = r.squared, adjr2 = adj.r.squared, AIC, BIC) 
+```
+
+## Tidied Coefficients from C-V model 2
+
+```{r}
+#| echo: true
+
+tidy(ptsd_mod2$finalModel, conf.int = TRUE, 
+     conf.level = 0.90) 
+```
+
+### "Variable Importance"
+
+```{r}
+#| echo: true
+
+varImp(ptsd_mod2)
+```
+
+Linear Fit: based on absolute value of t statistic for each parameter
+
+## Residual Plots (1) for final model
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(ptsd_mod2$finalModel, which = c(1:2))
+```
+
+## Residual Plots (2) for final model
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(ptsd_mod2$finalModel, which = c(3,5))
+```
+
+## More on K-fold Cross-Validation
+
+Linear regression example in section 16.5 of our Course Notes.
+
+- More on caret package at <https://topepo.github.io/caret/> although that's older now, and the tidymodels approach will allow us to do a lot of the same things later this term.
+
+Can you do something similar to this with a `glm()` fit in logistic regression?
+
+- Yes, definitely. See the next few slides and also [Section 48 here](https://rforhr.com/kfold.html#estimate_kfold_logistic).
+
+## K-Fold Cross-Validation for a Logistic Regression Fit using `glm()`
+
+Suppose we look at a new outcome: is `ptsd` > 0?
+
+```{r}
+#| echo: true
+maleptsd <- maleptsd |>
+  mutate(gg0 = factor(ifelse(ptsd == 0, "No", "Yes"))) |>
+  relocate(gg0)
+
+maleptsd |> tabyl(gg0)
+```
+
+Suppose we want to fit a logistic regression model to predict `gg0` on the basis of `aff` and `neg` (the same two predictors as we used for `ptsd`)
+
+## Set up five-fold cross-validation
+
+```{r}
+#| echo: true
+set.seed(43220241)
+ctrl <- trainControl(method = "cv", number = 5)
+
+gg0_mod <- train(gg0 ~ neg + aff, data = maleptsd, 
+                 method = "glm", family = binomial, 
+                 trControl = ctrl)
+gg0_mod
+```
+
+## Interpreting these summaries
+
+- Model accuracy shows the proportion of observations where the model classified the subject correctly.
+    - Here, our model correctly classifies 76.7% of subjects
+- Kappa measures classification accuracy but accounts for the baseline probabilities of the Yes/No groups. 
+    - Common Thresholds (from Landis and Koch 1977) are:
+        - 0.81 - 1.0 Almost perfect, 0.61 - 0.80 Substantial, 0.41 - 0.60 Moderate, 0.21 - 0.40 Fair, 0.01 - 0.2 Slight
+    - Here, our model does a fair job, with $\kappa = 0.33$.
+
+## Confusion Matrix
+
+```{r}
+#| echo: true
+
+predictions <- predict(gg0_mod)
+
+confusionMatrix(data = predictions, maleptsd$gg0)
+```
+
+## Use `summary()` to obtain final model
+
+```{r}
+#| echo: true
+
+summary(gg0_mod)
+```
+
+## `glance()` and `tidy()` after c/v
+
+```{r}
+#| echo: true
+
+glance(gg0_mod$finalModel)
+
+tidy(gg0_mod$finalModel, exponentiate = TRUE, 
+     conf.int = TRUE, conf.level = 0.90)
+```
+
+## Variable Importance in model classification
+
+```{r}
+#| echo: true
+
+varImp(gg0_mod)
+```
+
+So the information from `neg` is what's making the difference here.
+
+# Building a Table One
+
+## An Original Clinical Investigation
+
+![](c12/figures/bradley_title.png)
+
+[Link to Source](https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2720923)
+
+## Part of Bradley et al.'s Table 1
+
+![](c12/figures/bradley_table1.png)
+
+## Table Creation Instructions, JAMA: [linked here](https://jama.jamanetwork.com/data/ifora-forms/jama/tablecreationinst.pdf)
+
+![](c12/figures/jama_table_instructions.png)
+
+## A Data Set {.smaller}
+
+The `bradley.csv` data set is simulated, but consists of 1,374 observations (687 Cases and 687 Controls) containing:
+
+- a subject identification code, in `subject`
+- `status` (case or control)
+- age (in years)
+- sex (Male or Female)
+- race/ethnicity (white or non-white)
+- married (1 = yes or 0 = no)
+- location (ICU, bed, other)
+
+The `bradley.csv` data closely match the summary statistics provided in Table 1 of the Bradley et al. article. Our job is to recreate that part of Table 1, as best as we can.
+
+## The `bradley.csv` data (first 5 rows)
+
+- The `bradley_sim.md` file on our web site shows you how I simulated the data.
+
+![](c12/figures/bradley_csv.png)
+
+## To "Live" Coding
+
+On our web site (Data and Code + Class 12 materials)
+
+- In the `data` folder:
+    - `bradley.csv` data file
+- `bradley_table1.qmd` Quarto script
+- `bradley_table1.md` Results of running Quarto
+- `bradley_table1_result.csv` is the table generated by that Quarto script
+
+# To The "Live Code"
+
+## Opening `bradley_table1_result.csv` in Excel
+
+![](c12/figures/bradley_table1_result.png)
+
+## Learning More About Table 1
+
+Chapter 18 of the Course Notes covers two larger examples, and more details, like...
+
+- specifying factors, and re-ordering them when necessary
+- using non-normal summaries or exact categorical tests
+- dealing with warning messages and with missing data
+- producing Table 1 in R so you can cut and paste it into Excel or Word
+
+## Next Time
+
+- Thinking About Power: Retrospective Design
+- Robust Linear Models
+
+Good luck on the Quiz!

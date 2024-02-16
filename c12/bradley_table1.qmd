@@ -1,0 +1,104 @@
+---
+title: "Building Table 1 from the `bradley.csv` data"
+author: "Thomas E. Love"
+date: today
+format: 
+  html:
+    toc: true
+    number-sections: true
+    code-fold: show
+    code-tools: true
+    code-overflow: wrap
+    embed-resources: true
+    date-format: iso
+    theme: materia  ## change the theme if you prefer
+---
+
+This is a "live code" example that Dr. Love developed for Class 12 of 432, on 2023-02-23.
+
+## Load Packages
+
+```{r}
+#| message = FALSE
+knitr::opts_chunk$set(comment = NA)
+
+library(tableone)
+library(janitor)
+library(tidyverse)
+```
+
+## Ingest the `bradley.csv` data 
+
+```{r}
+brad_raw <- read_csv("data/bradley.csv", 
+                     show_col_types = FALSE) |>
+    clean_names()
+
+brad_raw
+```
+
+## Attempt 1
+
+```{r}
+vars <- c("age", "sex", "race_eth", "married", "location")
+trt <- c("status")
+
+attempt_1 <- CreateTableOne(data = brad_raw, 
+                       vars = vars, 
+                       strata = trt)
+print(attempt_1)
+```
+
+## What's wrong here?
+
+```{r}
+brad_new <- brad_raw |>
+    mutate(marital = fct_recode(factor(married), 
+                                "yes" = "1", 
+                                "no"  = "0")) |>
+    mutate(loc = fct_relevel(location, 
+                             "ICU", "Bed", "Other"))
+```
+
+## Second Attempt
+
+```{r}
+vars <- c("age", "sex", "race_eth", "marital", "loc")
+factorvars <- c("sex", "race_eth", "marital", "loc")
+trt <- c("status")
+
+attempt_2 <- CreateTableOne(data = brad_new, 
+                       vars = vars, 
+                       factorVars = factorvars,
+                       strata = trt)
+print(attempt_2)
+```
+
+## Show alternative summaries?
+
+```{r}
+print(attempt_2, 
+      nonnormal = c("age"),
+      exact = c("sex", "race_eth", "marital"))
+```
+
+## A more detailed summary?
+
+```{r}
+summary(attempt_2)
+```
+
+## Send original attempt 2 to Excel for polish?
+
+One option is to **save the Table 1** to a `.csv` file, which you can then open directly in Excel. This is the approach I generally use. Note the addition of some `quote`, `noSpaces` and `printToggle` selections here.
+
+```{r}
+brad_t1 <- print(attempt_2, 
+      quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+
+write.csv(brad_t1, 
+          file = "data/bradley_table1_result.csv")
+```
+
+You can then open the `bradley_table1_result.csv` file in Excel and edit further.
+

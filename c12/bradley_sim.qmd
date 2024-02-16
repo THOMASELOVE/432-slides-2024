@@ -1,0 +1,80 @@
+---
+title: "Simulating to create the `bradley` data"
+author: "Thomas E. Love"
+date: today
+format: 
+  html:
+    toc: true
+    number-sections: true
+    code-fold: show
+    code-tools: true
+    code-overflow: wrap
+    embed-resources: true
+    date-format: iso
+    theme: materia  ## change the theme if you prefer
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment = NA)
+```
+
+Creating the `bradley` data set, working from the top part of Table 1 of Bradley SM et al. (2019) "Incidence, Risk Factors, and Outcomes Associated With In-Hospital Acute Myocardial Infarction" *JAMA Network Open* 2(1): e187348. <https://doi.org/10.1001/jamanetworkopen.2018.7348>
+
+```{r}
+library(tidyverse)
+```
+
+## Simulating Cases
+
+```{r}
+set.seed(20200114)
+status <- rep("Case", 687)
+age0 <- round(rnorm(687, mean = 73.3, sd = 10.1))
+sex0 <- c(rep("Male", 677), rep("Female", 10))
+race_eth0 <- c(rep("white", 546), rep("non-white", 141))
+married0 <- c(rep(1, 356), rep(0, 331))
+location0 <- c(rep("ICU", 186), rep("Bed", 446), 
+               rep("Other", 55))
+
+dat_cases <- tibble(
+    status, age = sample(age0), sex = sample(sex0),
+    race_eth = sample(race_eth0), married = sample(married0),
+    location = sample(location0)
+)
+```
+
+
+## Simulating Controls
+
+```{r}
+status <- rep("Control", 687)
+age0 <- round(rnorm(687, mean = 73.4, sd = 10.3))
+sex0 <- c(rep("Male", 666), rep("Female", 21))
+race_eth0 <- c(rep("white", 527), rep("non-white", 160))
+married0 <- c(rep(1, 310), rep(0, 377))
+location0 <- c(rep("ICU", 65), rep("Bed", 580), 
+               rep("Other", 42))
+
+dat_controls <- tibble(
+    status, age = sample(age0), sex = sample(sex0), 
+    race_eth = sample(race_eth0), married = sample(married0), 
+    location = sample(location0)
+)
+```
+
+## Combining the Data 
+
+```{r}
+bradley_raw <- bind_rows(dat_cases, dat_controls)
+bradley_raw$subject <- sample(1:nrow(bradley_raw))
+
+bradley <- bradley_raw %>%
+    select(subject, everything()) %>%
+    arrange(subject)
+
+bradley
+```
+
+```{r}
+write_csv(bradley, "data/bradley.csv")
+```
