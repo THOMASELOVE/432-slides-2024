@@ -1,0 +1,584 @@
+---
+title: "432 Class 11"
+author: Thomas E. Love, Ph.D.
+date: "2024-02-20"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 11 | 2024-02-20 | <https://thomaselove.github.io/432-2024/>"
+---
+
+## Today's Agenda
+
+- Variable (Feature) Selection in Linear and Logistic Regression Models
+- New Packages to install: `bestglm` and `glmnet`
+- Linear Regression and Prostate Cancer Data
+    - Stepwise Regression and its (many) problems
+    - Feature Selection via "Best Subsets" and `bestglm()`
+- Logistic Regression and Pima Indians Diabetes Data
+- Ridge Regression, the Lasso and the Elastic Net via `glmnet`
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(janitor)
+library(broom)
+library(gt)
+library(car)     ## for vif
+
+library(bestglm) ## new package - identifies "best subsets"
+library(glmnet)  ## new package - ridge regression, elastic net, lasso
+
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+# Linear Regression Work
+
+## The `prost` data
+
+The `prost.csv` file I will work with today is explained and discussed at length in Chapters 15 and 16 of our Course Notes.
+
+```{r}
+#| echo: true
+prost <- read_csv("c11/data/prost.csv", show_col_types = FALSE) |> 
+  clean_names() |>
+  mutate(across(where(is_character), as_factor)) |>
+  mutate(subject = as.character(subject))
+
+dim(prost)
+```
+
+Our outcome of interest is `lpsa`. The other eight variables (besides `subject`) are candidate predictors, with `bph` and `gleason` being three-level factors, and `svi` being either 0 or 1. The other candidate predictors are quantitative.
+
+## The `prost` data
+
+There are no missing data in `prost`.
+
+```{r}
+#| echo: true
+prost
+```
+
+## Checking for Collinearity
+
+Are the candidate predictors strongly correlated? 
+
+- Check the linear regression using main effects for all eight candidate predictors ("kitchen sink" model.) 
+
+```{r}
+#| echo: true
+model_ks <- lm(lpsa ~ lcavol + lweight + age + bph + 
+                 svi + lcp + gleason + pgg45, data = prost)
+
+vif(model_ks)    ## from the car package
+```
+
+## A Kitchen-Sink Model
+
+```{r}
+#| echo: true
+model_ks <- lm(lpsa ~ lcavol + lweight + age + bph + 
+                 svi + lcp + gleason + pgg45, data = prost)
+model_ks
+```
+
+- Could also fit with `ols()` and/or include non-linear terms.
+- There are 11 coefficients here, including the intercept.
+
+## `model_ks` uses 10 degrees of freedom
+
+A rule some use for a minimum sample size ($n$) to fit a single linear model with $m$ coefficients besides the intercept (i.e. degrees of freedom) is $n \geq 50 + 8m$.
+
+- By that rule, with 10 df in our kitchen sink model, we'd need at least $50 + 8*10 = 130$ observations, just to fit that one model with some accuracy.
+- The `prost` data set has $n = 97$ available data points to both fit and evaluate potential models. 
+
+## So, the model is too big?
+
+![](c11/figures/bigmodel.jpg)  
+
+## Could we use stepwise regression?
+
+```{r}
+#| echo: true
+#| eval: false
+
+step(model_ks) 
+                  ## output omitted here
+```
+
+- Here, `step()` fits **31** models of various sizes, landing on a 5-predictor model omitting `lcp`, `gleason` and `pgg45`.
+
+How many observations did we really need to do this well?
+
+- If the models we fit averaged $m = 7$ df (probably an underestimate with backwards stepwise regression), our "rule" suggests at least $n = 50 + 8*7 = 106$ per model, times 31 models, so a minimum $n = 3286$.
+
+## Why Not Use Stepwise Procedures?
+
+From Frank Harrell: (google for many, many more)
+
+1. The $R^2$ for a model selected via `step()` is biased, high.
+2. The coefficient estimates (too far from 0) and standard errors (too small) are biased.
+3. In simulated stepwise analyses of prediction models, the final model represented noise 20-74% of the time.
+4. In simulations, the final stepwise model usually contained less than half of the actual number of real predictors.
+
+## Most Devastating Criticisms
+
+1. Stepwise variable selection encourages the analyst not to think.
+    - This is also mostly true for the other methods we'll discuss today, to be fair.
+2. All of the problems specified on the previous slide have no reasonable solutions which work across a broad range of modeling scenarios.
+
+Key Takeaway for Today: Automated feature selection is a troubling enterprise.
+
+# Using the `bestglm()` package (and function) to select "Best Subsets" from candidate predictors
+
+## Setting Up Our Candidates
+
+To use the `bestglm` package as it's designed, we need to set up our data so that:
+
+- we present all of our candidate predictors first, 
+    - all of which must be either *numeric* or *factor* variables,
+- then our outcome variable last,
+    - which must be *numeric* for a linear regression
+- and then convert this from a tibble to a data frame.
+
+## Our Candidates for a Linear Model
+
+In our case, we'll do the following.
+
+```{r}
+#| echo: true
+
+prost_set <- prost |> 
+  select(-subject) |>   ## include only candidate predictors and outcome
+  relocate(lpsa, .after = pgg45) |>  ## place outcome last
+  data.frame()          ## convert from tibble to data frame, only
+```
+
+Have we included all eight predictors, then the outcome?
+
+```{r}
+#| echo: true
+
+names(prost_set)
+dim(prost_set)
+```
+
+
+## Selecting an Information Criterion
+
+Then, we'll need to decide which of several available information criteria (IC) we might use. 
+
+- We'll choose between AIC and BIC in 432.
+- Other options include BIC$_g$ and BIC$_q$, which we won't use in 432.
+
+We have other options we can tweak as well, but we'll follow the approach on the next slide pretty closely for doing "best subsets" selection for a linear model.
+
+## Best Subsets Selection: AIC or BIC
+
+Here, we'll run the `bestglm()` function on our prostate data, to identify the top 3 fitting linear models (with 0 (intercept only) to all (8 in this case) predictors), using AIC.
+
+```{r}
+#| echo: true
+best_lin_AIC <- 
+  bestglm(Xy = prost_set, family = gaussian, IC = "AIC", 
+          method = "exhaustive", TopModels = 3, nvmax = "default")
+```
+
+Next, we'll do the same thing, but using BIC as our criterion.
+
+```{r}
+#| echo: true
+
+best_lin_BIC <- 
+  bestglm(Xy = prost_set, family = gaussian, IC = "BIC",
+          method = "exhaustive", TopModels = 3, nvmax = "default")
+```
+
+## Which model does AIC like best?
+
+Which of the potential subsets of our 8 predictors does `bestglm()` package identify as having the best (lowest) AIC?
+
+```{r}
+#| echo: true
+
+best_lin_AIC
+```
+
+- Suggests a 5-predictor model, leaving out `lcp`, `gleason` and `pgg45`. (Note: same as `step()` result.)
+
+## Top Model at each size, via AIC?
+
+What are the best subsets at each predictor count?
+
+```{r}
+#| echo: true
+
+cbind(preds = rownames(best_lin_AIC$Subsets), best_lin_AIC$Subsets) |>
+  gt() |> tab_options(table.font.size = 20)
+```
+
+## Best 3 Models, according to AIC? 
+
+```{r}
+#| echo: true
+
+best_lin_AIC$BestModels |> gt() |> tab_options(table.font.size = 24)
+```
+
+1. Use `lcavol`, `lweight`, `svi`, plus `age` and `bph` (5 predictors)
+2. Use `lcavol`, `lweight`, `svi`. (3 predictors)
+3. Use `lcavol`, `lweight`, `svi`, plus `age`, `bph` and `gleason` (6 predictors)
+
+## Which model does BIC think is best?
+
+```{r}
+#| echo: true
+
+best_lin_BIC
+```
+
+- BIC suggests a 3-predictor model, leaving out `age` and `bph` in addition to `lcp`, `gleason` and `pgg45`.
+- Note: This was the #2 choice via AIC, and was the best-fitting model by AIC among models with three predictors.
+
+## Top Model at each size, via BIC?
+
+Best subsets of predictors via BIC for each model size?
+
+```{r}
+#| echo: true
+
+cbind(preds = rownames(best_lin_BIC$Subsets), best_lin_BIC$Subsets) |>
+  gt() |> tab_options(table.font.size = 20)
+```
+
+## Best 3 Models, according to BIC? 
+
+```{r}
+#| echo: true
+
+best_lin_BIC$BestModels |> gt() |> tab_options(table.font.size = 24)
+```
+
+1. Use `lcavol`, `lweight`, `svi`. (3 predictors)
+2. Use `lcavol`, `lweight`, `svi`, plus `age` (4 predictors)
+3. Use `lcavol`, `lweight`, `svi`, plus `pgg45` (4 predictors)
+
+# "Best Subsets" in logistic regression
+
+## The Pima Indians Diabetes Data
+
+> This dataset is originally from the National Institute of Diabetes and Digestive and Kidney Diseases. The objective of the dataset is to diagnostically predict whether or not a patient has diabetes, based on certain diagnostic measurements included in the dataset. All patients here are females at least 21 years old of Pima Indian heritage.
+
+The data includes 8 medical predictors (next slide) for one outcome variable, `diabetes`, which is either 1 (subject has diabetes) or 0 (subject does not). 
+
+## Pima Diabetes Predictors {.smaller}
+
+Variable | Description
+----------------: | :--------------------------------------
+`age` | Age (years)
+`bmi` | Body Mass Index ($kg/m^2$)
+`dbp` | Diastolic Blood Pressure (mm Hg)
+`glucose` | Plasma glucose concentration at 2 hours in an oral glucose tolerance test
+`insulin` | 2-hour serum insulin (mu U/ml)
+`pedig` | Diabetes Pedigree Function
+`preg` | Number of times pregnant
+`triceps` | Triceps Skin fold thickness (mm)
+
+## Ingesting the data
+
+```{r}
+#| echo: true
+
+pimadm <- read_csv("c11/data/pima_diabetes.csv", 
+                   show_col_types = FALSE) |>
+  clean_names() |>
+  rename(preg = pregnancies, dbp = blood_pressure, 
+         triceps = skin_thickness, 
+         pedig = diabetes_pedigree_function)
+
+dim(pimadm)
+```
+
+## Setting up for `bestglm()`, 1
+
+We need a data frame, showing the candidate predictors (numerical or factor), then the outcome (as a factor).
+
+```{r}
+#| echo: true
+pimadm
+```
+
+## Setting up for `bestglm()`, 2
+
+Here, we just need to convert `diabetes` to a factor, and then convert the tibble to a data frame.
+
+```{r}
+#| echo: true
+pimadm_df <- pimadm |>
+  mutate(diabetes = 
+           fct_recode(factor(diabetes), "Yes" = "1", "No" = "0")) |>
+  as.data.frame()
+```
+
+## `bestglm()` for Logistic Models
+
+We’ll run the `bestglm()` function on our `pimadm_df` data, to identify the top 3 fitting logistic models (with 0 (intercept only) to all (8 here) predictors), first using AIC, and then using BIC.
+
+```{r}
+#| echo: true
+best_pima_AIC <-
+  bestglm(Xy = pimadm_df, family = binomial, IC = "AIC",
+          method = "exhaustive", TopModels = 3, nvmax = "default")
+
+best_pima_BIC <-
+  bestglm(Xy = pimadm_df, family = binomial, IC = "BIC",
+          method = "exhaustive", TopModels = 3, nvmax = "default")
+```
+
+## AIC's favorite model
+
+```{r}
+#| echo: true
+best_pima_AIC
+```
+
+- Seven predictors (all but `triceps`)
+
+## BIC's favorite model
+
+```{r}
+#| echo: true
+best_pima_BIC
+```
+
+- Four predictors (drop `age`, `dbp`, `insulin`, `triceps`)
+
+## AIC: Top 3 Models
+
+```{r}
+#| echo: true
+best_pima_AIC$BestModels |> gt() |> tab_options(table.font.size = 24)
+```
+
+1. `bmi`, `dbp`, `glucose`, `pedig`, `preg`, `age` and `insulin`.
+2. `bmi`, `dbp`, `glucose`, `pedig`, `preg`, and `age`.
+3. `bmi`, `dbp`, `glucose`, `pedig`, `preg`, and `insulin`. 
+
+## BIC: Top 3 Models
+
+```{r}
+#| echo: true
+best_pima_BIC$BestModels |> gt() |> tab_options(table.font.size = 24)
+```
+
+1. `bmi`, `glucose`, `preg`, and `pedig`.
+2. `bmi`, `glucose`, `preg`, `pedig` and `dbp`
+3. `bmi`, `glucose`, and `preg`. 
+
+
+## AIC: Top Models by Size
+
+```{r}
+#| echo: true
+cbind(preds = rownames(best_pima_AIC$Subsets), best_pima_AIC$Subsets) |>
+  gt() |> tab_options(table.font.size = 20)
+```
+
+
+## BIC: Top Models by Size
+
+```{r}
+#| echo: true
+cbind(preds = rownames(best_pima_BIC$Subsets), best_pima_BIC$Subsets) |>
+  gt() |> tab_options(table.font.size = 20)
+```
+
+# Is this really a solution? (Introduction to `glmnet` package)
+
+## Feature Selection as commonly done
+
+All subsets / best subsets / stepwise methods either include a variable or drop it from the model. Often, this choice is based on only a tiny difference in fit quality. 
+
+- Harrell: not reasonable to assume that a population regression coefficient would be exactly zero just because it failed to meet a criterion for significance. 
+- Efron: this approach is "overly greedy, impulsively eliminating covariates which are correlated with other covariates."
+
+## Feature Selection as commonly done
+
+- Greenland: Variable selection does more damage to confidence interval widths than to point estimates.
+- Greenland: Stepwise variable selection on confounders leaves important confounders uncontrolled.
+- Greenland: Shrinkage approaches (like ridge regression and the lasso) are far superior to variable selection.
+
+So, what's the alternative?
+
+## Lasso, Ridge Regression, Elastic Net
+
+These methods are particularly useful when we believe the effects are sparse, in the sense that we believe that few of the many predictors we are evaluating have a meaningful effect. 
+
+Consider, for instance, the analysis of gene expression data, where we have good reason to believe that only a small number of genes have an influence on our response of interest.
+
+Or, in medical claims data, where we can have thousands of available codes to search through that may apply to some of the people included in a large analysis relating health care costs to outcomes.
+
+## The `glmnet` package
+
+We'll use the `glmnet` package to fit models via penalized maximum likelihood, which incorporate some coefficient shrinkage, using
+
+- the *lasso* ($\alpha$ parameter = 1)
+- *ridge regression* ($\alpha$ parameter = 0)
+- the *elastic net* ($\alpha$ = 0.5), combining the lasso and ridge regression
+
+to minimize mean-squared error of estimation (in linear regression) and deviance (in logistic).
+
+## Role of the $\lambda$ parameter
+
+We'll use K-fold cross-validation to determine the value of $\lambda$, which is the penalty used in building these parsimonious models. 
+
+- When $\lambda = 0$, we have ordinary least squares.
+- When $\lambda$ is large, all coefficients will shrink towards zero.
+
+## Set up our `prost` data for `glmnet`
+
+```{r}
+#| echo: true
+names(prost)
+```
+
+Create a data matrix of the predictors (I'll call it `pred_x` here), and then a data matrix of the outcome (which I'll call `out_y`.)
+
+```{r}
+#| echo: true
+
+pred_x <- prost |> select(lcavol:pgg45) |> as.matrix()
+out_y <- prost |> select(lpsa) |> as.matrix()
+```
+
+In the next three slides, we'll fit three different models (changing $\alpha$), and we'll use 10-fold cross-validation to select the $\lambda$ parameter based on minimizing mean squared error.
+
+## Fit a lasso model for `lpsa`
+
+```{r}
+#| echo: true
+set.seed(4321)
+pros_cv1 <- cv.glmnet(pred_x, out_y, type.measure = "mse", nfolds = 10)
+pros_lasso <- glmnet(pred_x, out_y, alpha = 1, lambda = pros_cv1$lambda.min)
+tidy(pros_lasso) |> gt() |> tab_options(table.font.size = 20) |>
+  fmt_number(columns = estimate:dev.ratio, decimals = 3)
+```
+
+- This model includes 5 predictors (omitting `bph`, `lcp` and `gleason`) and also shrinks the coefficients towards zero.
+
+## Fit an elastic net model for `lpsa`
+
+```{r}
+#| echo: true
+set.seed(4322)
+pros_cv2 <- cv.glmnet(pred_x, out_y, type.measure = "mse", nfolds = 10)
+pros_elnet <- glmnet(pred_x, out_y, alpha = 0.5, 
+                   lambda = pros_cv2$lambda.min)
+tidy(pros_elnet) |> gt() |> tab_options(table.font.size = 20) |>
+  fmt_number(columns = estimate:dev.ratio, decimals = 3)
+```
+
+- 6 predictor model (omitting `bph` and `gleason`)
+
+## Fit a ridge regression model for `lpsa`
+
+```{r}
+#| echo: true
+set.seed(4323)
+pros_cv3 <- cv.glmnet(pred_x, out_y, type.measure = "mse", nfolds = 10)
+pros_ridge <- glmnet(pred_x, out_y, alpha = 0, 
+                   lambda = pros_cv3$lambda.min)
+tidy(pros_ridge) |> gt() |> tab_options(table.font.size = 20) |>
+  fmt_number(columns = estimate:dev.ratio, decimals = 3)
+```
+
+- Same terms here (different shrinkage) as elastic net.
+
+## Setting up for `glmnet` in a logistic regression setting
+
+```{r}
+#| echo: true
+
+pimadm
+
+pima_x <- pimadm |> select(-diabetes) |> as.matrix()
+pima_y <- pimadm |> select(diabetes) |> as.matrix() # number, not factor
+```
+
+## Lasso results under logistic fit
+
+Cross-validate so as to minimize residual deviance... 
+
+```{r}
+#| echo: true
+
+set.seed(1234)
+pima_cv1 <- cv.glmnet(pima_x, pima_y, type.measure = "deviance", nfolds = 25)
+pima_lasso <- glmnet(pima_x, pima_y, family = binomial, alpha = 1, 
+                     lambda = pima_cv1$lambda.min)
+tidy(pima_lasso) 
+```
+
+- Omits `triceps` and shrinks coefficients
+
+## Elastic Net results under logistic fit
+
+```{r}
+#| echo: true
+
+set.seed(4325)
+pima_cv2 <- cv.glmnet(pima_x, pima_y, type.measure = "deviance", nfolds = 10)
+pima_elnet <- glmnet(pima_x, pima_y, alpha = 0.5, 
+                     lambda = pima_cv2$lambda.min)
+tidy(pima_elnet) 
+```
+
+## Ridge regression for logistic fit
+
+```{r}
+#| echo: true
+
+set.seed(4312354)
+pima_cv3 <- cv.glmnet(pima_x, pima_y, type.measure = "deviance", nfolds = 15)
+pima_ridge <- glmnet(pima_x, pima_y, alpha = 0, 
+                     lambda = pima_cv3$lambda.min)
+tidy(pima_ridge) 
+```
+
+- Here, no coefficients dropped, just shrunk.
+
+# Conclusions and advice
+
+## Minimizing the chance of overfitting
+
+So, what **should** we be thinking about when confronted with a situation where a new model is under development, and we have some data and a lot of predictors to consider?
+
+1. Pre-specify well-motivated predictors and how to model them.
+2. Eliminate predictors without using the outcome.
+
+## Minimizing the chance of overfitting
+
+3. Use the outcome, but cross-validate the target measure of prediction error.
+4. Use the outcome, and **shrink** the coefficient estimates.
+
+This last comment applies to things like our "best subsets" approach as well as standard stepwise procedures.
+
+## Next Time
+
+- More on K-Fold Cross Validation in linear regression
+- Creating Table 1 with the `tableone` package
+- Quiz 1 coming your way at 5 PM Thursday.
+
