@@ -1,0 +1,792 @@
+---
+title: "432 Class 13"
+author: Thomas E. Love, Ph.D.
+date: "2024-02-27"
+format: docx
+---
+
+
+## Today's Agenda
+
+1. Evaluation of a Study through Retrospective Design
+    - Gelman and Carlin: Type S and Type M errors
+    - The `retrodesign()` function
+2. Robust Linear Regression
+    - The **crimestat** data
+    - Using Huber weights, then using bisquare weights
+    - Quantile Regression on the Median
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(janitor)
+library(broom)
+library(gt)
+library(MASS)         ## fitting robust linear models
+library(quantreg)     ## fitting quantile regressions
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+# Evaluation through Retrospective Design
+
+## On "post hoc" power analysis
+
+Suppose you read a study, and the result appears to not meet the standard of statistical significance that you wish it did. The idea is to show that a "non-significant" hypothesis test failed to achieve significance because it wasn't powerful enough.
+
+- Knowing what we have learned from this new study, what sort of power did the study have to detect the effect that we saw? (a *post hoc* power calculation)
+- What sort of sample size might we use in a new study? (maybe useful?)
+- Was this study dead in the water before we did it?
+
+## To be clear, Post hoc power calculations are not useful
+
+[Post Hoc Power Calculations Are Not Useful](https://library.virginia.edu/data/articles/post-hoc-power-calculations-are-not-useful) from University of Virginia's Research Data Services cites these papers.
+
+- [Althouse A (2021)](https://pubmed.ncbi.nlm.nih.gov/32814615/)
+- [Goodman SN Berlin JA (1994)](https://pubmed.ncbi.nlm.nih.gov/8017747/)
+- [Hoenig JM Heisey DM (2001)](https://www.tandfonline.com/doi/abs/10.1198/000313001300339897)
+
+This last piece is from *The American Statistician* and is entitled "The abuse of power: The pervasive fallacy of power calculations for data analysis." Much wisdom there.
+
+## Andrew Gelman's blog
+
+Blog is [Statistical Modeling, Causal Inference, and Social Science](https://statmodeling.stat.columbia.edu/)
+
+- [Statistics is like basketball, or knitting](https://statmodeling.stat.columbia.edu/2016/03/11/statistics-is-like-basketball-or-knitting/) from 2016-03-11
+- The post discusses [this article](https://pubmed.ncbi.nlm.nih.gov/26510427/), shown on the next slide. 
+
+Headline Finding: A sample of ~500 men from America and India shows a significant relationship between sexist views and the presence of facial hair.
+
+---
+
+![](c13/figures/oldmeadow.png)
+
+
+## Facial Hair and Sexist Attitudes
+
+Excerpt 1:
+
+> Since a linear relationship has been found between facial hair thickness and perceived masculinity . . . we explored the relationship between facial hair thickness and sexism. . . . Pearson's correlation found no significant relationships between facial hair thickness and hostile or benevolent sexism, education, age, sexual orientation, or relationship status.
+
+## Facial Hair and Sexist Attitudes
+
+Excerpt 2:
+
+> We conducted pairwise comparisons between clean-shaven men and each facial hair style on hostile and benevolent sexism scores. . . . For the purpose of further analyses, participants were classified as either clean-shaven or having facial hair based on their self- reported facial hair style . . . There was a significant Facial Hair Status by Sexism Type interaction . . .
+
+## Gelman, 2016-03-11 Blog
+
+So their headline finding appeared only because, after their first analysis failed, they shook and shook the data until they found something statistically significant. 
+
+>- All credit to the researchers for admitting that they did this, but poor practice of them to present their result in the abstract to their paper without making this clear, and too bad that the journal got suckered into publishing this. 
+
+## How should we react to this?
+
+Gelman:
+
+- Statisticians such as myself should recognize that the point of criticizing a study is, in general, to shed light on statistical errors, maybe with the hope of reforming future statistical education.
+- Researchers and policymakers should not just trust what they read in published journals.
+
+## Gelman and Carlin (2014) [PDF Link](http://www.stat.columbia.edu/~gelman/research/published/retropower_final.pdf)
+
+![](c13/figures/gelman_carlin_1.png)
+
+## Specifying effect sizes - how? (1/2)
+
+When doing a power calculation, how do people specify an effect size of interest? Two main approaches...
+
+1. **Empirical**: assuming an effect size equal to the estimate from a previous study or from the data at hand (if performed retrospectively).
+    - generally based on small samples
+    - when preliminary results look interesting, they are more likely biased towards unrealistically large effects
+
+## Specifying effect sizes - how? (2/2)
+
+When doing a power calculation, how do people specify an effect size of interest? Two main approaches...
+
+2. **On the basis of goals**: assuming an effect size deemed to be substantively important or more specifically the minimum effect that would be substantively important.
+    - Can also lead to specifying effect sizes that are larger than what is likely to be the true effect.
+
+Both approaches lead to performing studies that are too small or misinterpretation of findings after completion.
+
+## What is a design analysis?
+
+- The idea of a **design analysis** is to improve the design and evaluation of research, when you want to summarize your inference through concepts related to statistical significance.
+- Type 1 and Type 2 errors are tricky concepts and aren't easy to describe before data are collected, and are very difficult to use well after data are collected.
+
+## Why a design analysis?
+
+- The previous slide's problems are made worse when you have:
+    - Noisy studies, where the signal may be overwhelmed,
+    - Small Sample Sizes
+    - No pre-registered (prior to data gathering) specifications for analysis
+- Top statisticians avoid "post hoc power analysis"...
+    - Why? It's usually crummy.
+
+## Why not post hoc power analysis?
+
+You collected data and analyzed the results. Now you want to do an after data gathering (post hoc) power analysis.
+
+1. What will you use as your "true" effect size? 
+    - Often, point estimate from data - results very misleading - power is usually seriously overestimated when computed on the basis of "significant" results.
+    - Much better (but rarer) to identify plausible effect sizes based on external information rather than on your sparkling new result.
+
+## Why not post hoc power analysis?
+
+2. What are you trying to do? (too often)
+    - get researcher off the hook (I didn't get p < 0.05 because I had low power - an alibi to explain away non-significant findings) or
+    - encourage overconfidence in the finding.
+
+A broader notion of design, though, can be useful before and after data are gathered.
+
+## Broader Design Ideas
+
+Gelman and Carlin recommend design calculations to estimate
+
+1. Type S (sign) error - the probability of an estimate being in the wrong direction, and
+2. Type M (magnitude) error, or exaggeration ratio - the factor by which the magnitude of an effect might be overestimated.
+
+## The Value of Type S and Type M error
+
+These ideas can (and should) have value **both** before data collection/analysis and afterwards (especially when an apparently strong and significant effect is found.)
+
+- The big challenge remains identifying plausible effect sizes based on external information. Crucial to base our design analysis on an external estimate.
+
+## Building Blocks (1/2)
+
+You perform a study that yields estimate *d* with standard error *s*. Think of *d* as an estimated mean difference, for example.
+
+>- Looks significant if $|d/s| > 2$, which roughly corresponds to *p* < 0.05. Inconclusive otherwise.
+>- Now, consider a true effect size *D* (the value that *d* would take if you had an enormous sample)
+>- *D* is hypothesized based on *external* information (Other available data, Literature review, sometimes Modeling, etc.)
+
+## Building Blocks (2/2)
+
+You perform a study that yields estimate *d* with standard error *s*. Think of *d* as an estimated mean difference, for example.
+
+- Define $d^{rep}$ as the estimate that would be observed in a hypothetical replication study with a design identical to our original study.
+
+## Design Analysis (Gelman and Carlin)
+
+![](c13/figures/design-analysis.png)
+
+## Retrodesign function (R code coming)
+
+Inputs to the function:
+
+- `D`, the hypothesized true effect size
+- `s`, the standard error of the estimate
+- `alpha`, the statistical significance threshold (default 0.05)
+- `df`, the degrees of freedom (default assumption: infinite)
+
+## Retrodesign function (R code coming)
+
+Output:
+
+- the power
+- the Type S error rate
+- the exaggeration ratio
+
+## Retrodesign function 
+
+- built by Gelman and Carlin
+
+```{r}
+#| echo: true
+retrodesign <- function(D, s, alpha=.05, df=Inf, n.sims=10000)
+  {
+    z <- qt(1-alpha/2, df)
+    p.hi <- 1 - pt(z-D/s, df)
+    p.lo <- pt(-z-D/s, df)
+    power <- p.hi + p.lo
+    typeS <- p.lo/power
+    estimate <- D + s*rt(n.sims,df)
+    significant <- abs(estimate) > s*z
+    exaggeration <- mean(abs(estimate)[significant])/D
+    return(list(power=power, typeS=typeS, 
+                exaggeration=exaggeration))
+}
+```
+
+## What if we have a beautiful, unbiased study?
+
+Suppose the true effect is 2.8 standard errors away from zero, in a study built to have 80% power for that effect with 95% confidence.
+
+```{r}
+#| echo: true
+
+set.seed(20240227)
+retrodesign(D = 28, s = 10, alpha = 0.05)
+```
+
+## A beautiful, unbiased study?
+
+power | typeS | exaggeration
+----: | -----: | ---------:
+0.79956 | $1.21 \times 10^{-6}$ | 1.13
+
+- With the power this high (80%), we have a type S error rate of $1.21 \times 10^{-6}$ and an expected exaggeration factor of 1.13.
+- Nothing to worry about with either direction of a statistically significant estimate and the overestimation of the magnitude of the effect will be small.
+- What does this look like?
+
+## 80% power; large effect (2.8 SE above $H_0$)
+
+```{r}
+x <- seq(-40, 40, length = 100)
+hx0 <- dnorm(x, mean = 0, sd = 10)
+hx3 <- dnorm(x, mean = 3, sd = 10)
+hx12 <- dnorm(x, mean = 12, sd = 10)
+hx28 <- dnorm(x, mean = 28, sd = 10)
+hx2215 <- dnorm(x, mean = 22.15, sd = 10)
+dat <- data.frame(x, hx0, hx3, hx12, hx28, hx2215)
+```
+
+
+```{r}
+#| fig-height: 5
+
+ggplot(dat, aes(x, hx28)) +
+    geom_line(col = "blue") +
+    geom_segment(aes(x = 0, xend = 0, y = 0, yend = dnorm(0, mean = 28, sd = 10)), col = "red") +
+    geom_segment(aes(x = 28, xend = 28, y = 0, yend = dnorm(28, mean = 28, sd = 10)), col = "blue") +
+    geom_segment(aes(x = -40, xend = 40, y = 0, yend = 0)) +
+    geom_ribbon(data = subset(dat, x > 19.6), aes(ymax = hx28), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_ribbon(data = subset(dat, x < -19.6), aes(ymax = hx28), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_text(x = 30, y = 0.01, label = "Reject H_0", col = "white", size = 5) +
+    geom_text(x = -27, y = 0.003, label = "Reject H_0", col = "red", size = 5) +
+    theme(axis.ticks = element_blank(), axis.text.y = element_blank()) +
+    labs(x = "Estimated Effect Size", y = "", title = "True Effect 2.8 SE above Null Hypothesis (Strong Effect)", subtitle = "Power = 80%, Risk of Type S error near zero, Exaggeration Ratio near 1")
+```
+
+## `retrodesign` for Zero Effect
+
+```{r zero_effect}
+#| echo: true
+
+set.seed(202402272)
+retrodesign(D = 0, s = 10)
+```
+
+- Power = 0.05, Pr(Type S error) = 0.5, Exaggeration Ratio is infinite.
+
+
+## Power, Type S and Type M Errors: Zero Effect
+
+```{r}
+#| fig-height: 5
+
+ggplot(dat, aes(x, hx0)) +
+    geom_line() +
+    geom_segment(aes(x = 0, xend = 0, y = 0, yend = dnorm(0, mean = 0, sd = 10)), col = "red") +
+    geom_segment(aes(x = -40, xend = 40, y = 0, yend = 0)) +
+    geom_ribbon(data = subset(dat, x > 19.6), aes(ymax = hx0), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_ribbon(data = subset(dat, x < -19.6), aes(ymax = hx0), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_text(x = 30, y = 0.005, label = "Reject H_0", col = "red", size = 5) +
+    geom_text(x = -30, y = 0.005, label = "Reject H_0", col = "red", size = 5) +
+    theme(axis.ticks = element_blank(), axis.text.y = element_blank()) +
+    labs(x = "Estimated Effect Size", y = "", title = "True Effect At the Null Hypothesis", subtitle = "Power = 0.05, Type S error rate = 50% and infinite Exaggeration Ratio")
+```
+
+
+## Retrodesign for a true effect 1.2 SE above $H_0$
+
+```{r}
+#| echo: true
+set.seed(202402273)
+retrodesign(D = 12, s = 10)
+```
+
+## What 22.4% power looks like...
+
+```{r}
+#| fig-height: 5
+
+ggplot(dat, aes(x, hx12)) +
+    geom_line(col = "blue") +
+    geom_segment(aes(x = 0, xend = 0, y = 0, yend = dnorm(0, mean = 12, sd = 10)), col = "red") +
+    geom_segment(aes(x = 12, xend = 12, y = 0, yend = dnorm(12, mean = 12, sd = 10)), col = "blue") +
+    geom_segment(aes(x = -40, xend = 40, y = 0, yend = 0)) +
+    geom_ribbon(data = subset(dat, x > 19.6), aes(ymax = hx12), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_ribbon(data = subset(dat, x < -19.6), aes(ymax = hx12), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_text(x = 35, y = 0.015, label = "Reject H_0", col = "red", size = 5) +
+    geom_text(x = -27, y = 0.003, label = "Reject H_0", col = "red", size = 5) +
+    theme(axis.ticks = element_blank(), axis.text.y = element_blank()) +
+    labs(x = "Estimated Effect Size", y = "", title = "True Effect 1.2 SE above Null Hypothesis", subtitle = "Power = 22.4%, Risk of Type S error is 0.004, Exaggeration Ratio is 2.12")
+```
+
+## What 60% Power Looks Like
+
+```{r}
+#| fig-height: 5
+ggplot(dat, aes(x, hx2215)) +
+    geom_line(col = "blue") +
+    geom_segment(aes(x = 0, xend = 0, y = 0, yend = dnorm(0, mean = 22.15, sd = 10)), col = "red") +
+    geom_segment(aes(x = 22.15, xend = 22.15, y = 0, yend = dnorm(22.15, mean = 22.15, sd = 10)), col = "blue") +
+    geom_segment(aes(x = -40, xend = 40, y = 0, yend = 0)) +
+    geom_ribbon(data = subset(dat, x > 19.6), aes(ymax = hx2215), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_ribbon(data = subset(dat, x < -19.6), aes(ymax = hx2215), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_text(x = 30, y = 0.01, label = "Reject H_0", col = "white", size = 5) +
+    geom_text(x = -27, y = 0.003, label = "Reject H_0", col = "red", size = 5) +
+    theme(axis.ticks = element_blank(), axis.text.y = element_blank()) +
+    labs(x = "Estimated Effect Size", y = "", title = "True Effect 2.215 SE above Null Hypothesis", subtitle = "Power = 0.60, Risk of Type S error is <0.01%, Exaggeration Ratio is about 1.3")
+```
+
+## Gelman & Carlin, Figure 2
+
+![](c13/figures/Gelman_Carlin_fig2.png)
+
+## Example: Beauty and Sex Ratios
+
+Kanazawa study of 2972 respondents from the National Longitudinal Study of Adolescent Health
+
+- Each subject was assigned an attractiveness rating on a 1-5 scale and then, years later, had at least one child.
+- Of the first-born children with parents in the most attractive category, 56% were girls, compared with 48% girls in the other groups.
+- So the estimated difference was 8 percentage points with a reported *p* = 0.015
+- Kanazawa stopped there, but Gelman and Carlin don't.
+
+## Beauty and Sex Ratios
+
+We need to postulate an effect size, which will not be 8 percentage points. Instead, Gelman and colleagues hypothesized a range of true effect sizes using the scientific literature.
+
+> There is a large literature on variation in the sex ratio of human births, and the effects that have
+been found have been on the order of 1 percentage point (for example, the probability of a girl birth
+shifting from 48.5 percent to 49.5 percent). 
+
+## More from Gelman et al.
+
+> Variation attributable to factors such as race, parental age, birth order, maternal weight, partnership status and season of birth is estimated at from less than 0.3 percentage points to about 2 percentage points, with larger changes (as high as 3 percentage points) arising under economic conditions of poverty and famine.
+
+> (There are) reliable findings that male fetuses (and also male babies and adults) are more likely than females to die under adverse conditions.
+
+## So, what is a reasonable effect size?
+
+- Small observed differences in sex ratios in a multitude of studies of other issues (much more like 1 percentage point, tops)
+- Noisiness of the subjective attractiveness rating (1-5) used in this particular study
+
+So, Gelman and colleagues hypothesized three potential effect sizes (0.1, 0.3 and 1.0 percentage points) and under each effect size, considered what might happen in a study with sample size equal to Kanazawa's study.
+
+## How big is the standard error?
+
+- From the reported estimate of 8 percentage points and p value of 0.015, the standard error of the difference is 3.29 percentage points.
+    + If *p* value = 0.015 (two-sided), then Z score =  `qnorm(p = 0.015/2, lower.tail=FALSE)` = 2.432
+    + Z = estimate/SE, and if estimate = 8 and Z = 2.432, then SE = 8/2.432 = 3.29
+
+## Retrodesign Results: Option 1
+
+- Assume true difference D = 0.1 percentage point (probability of girl births differing by 0.1 percentage points, comparing attractive with unattractive parents). 
+- Standard error assumed to be 3.29, and $\alpha$ = 0.05
+
+```{r}
+#| echo: true
+set.seed(201803164)
+retrodesign(D = 0.1, s = 3.29, alpha = 0.05)
+```
+
+## Option 1 Conclusions
+
+Assuming the true difference is 0.1 means that probability of girl births differs by 0.1 percentage points, comparing attractive with unattractive parents.
+
+If the estimate is statistically significant, then:
+
+1. There is a 46% chance it will have the wrong sign (from the Type S error rate).
+
+
+## Option 1 Conclusions
+
+Assuming the true difference is 0.1 means that probability of girl births differs by 0.1 percentage points, comparing attractive with unattractive parents.
+
+If the estimate is statistically significant, then:
+
+2. The power is 5% and the Type S error rate of 46%. Multiplying those gives a 2.3% probability that we will find a statistically significant result in the wrong direction. 
+
+
+## Option 1 Conclusions
+
+Assuming the true difference is 0.1 means that probability of girl births differs by 0.1 percentage points, comparing attractive with unattractive parents.
+
+If the estimate is statistically significant, then:
+
+3. We thus have a power - 2.3% = 2.7% probability of showing statistical significance in the correct direction.
+
+
+## Option 1 Conclusions
+
+Assuming the true difference is 0.1 means that probability of girl births differs by 0.1 percentage points, comparing attractive with unattractive parents.
+
+If the estimate is statistically significant, then:
+
+4. In expectation, a statistically significant result will be 78 times too high (the exaggeration ratio).
+
+## Retrodesign Results: Options 2 and 3
+
+Assumption | Power | Type S | Exaggeration Ratio
+----------: | ----: | ----: | -------:
+D = 0.1 | 0.05 | 0.46 | 78
+D = 0.3 | 0.05 | 0.39 | 25
+D = 1.0 | 0.06 | 0.19 | 7.8
+
+## What if true D = 1.0 percentage points?
+
+Under a true difference of 1.0 percentage point, there would be 
+
+- a 4.9% chance of the result being statistically significantly positive and a 1.1% chance of a statistically significantly negative result. 
+- A statistically significant finding in this case has a 19% chance of appearing with the wrong sign, and 
+- the magnitude of the true effect would be overestimated by an expected factor of 8.
+
+## What 6% power looks like...
+
+```{r}
+#| fig-height: 5
+ggplot(dat, aes(x, hx3)) +
+    geom_line(col = "blue") +
+    geom_segment(aes(x = 0, xend = 0, y = 0, yend = dnorm(0, mean = 3, sd = 10)), col = "red") +
+    geom_segment(aes(x = 3, xend = 3, y = 0, yend = dnorm(3, mean = 3, sd = 10)), col = "blue") +
+    geom_segment(aes(x = -40, xend = 40, y = 0, yend = 0)) +
+    geom_ribbon(data = subset(dat, x > 19.6), aes(ymax = hx3), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_ribbon(data = subset(dat, x < -19.6), aes(ymax = hx3), ymin = 0, fill = "red", col = NA, alpha = 0.5) +
+    geom_text(x = 30, y = 0.005, label = "Reject H_0", col = "red", size = 5) +
+    geom_text(x = -30, y = 0.005, label = "Reject H_0", col = "red", size = 5) +
+    theme(axis.ticks = element_blank(), axis.text.y = element_blank()) +
+    labs(x = "Estimated Effect Size", y = "", title = "True Effect 0.3 SE above Null Hypothesis", subtitle = "Power = 6%, Risk of Type S error is 20%, Exaggeration Ratio is 7.9")
+```
+
+## Gelman's Chief Criticism: 6% Power = D.O.A.
+
+> Their effect size is tiny and their measurement error is huge. My best analogy is that they are trying to use a bathroom scale to weigh a feather ... and the feather is resting loosely in the pouch of a kangaroo that is vigorously jumping up and down.
+
+---
+
+![](c13/figures/kangaroo.png)
+
+## What to do?
+
+In advance, **and** after the fact, think hard about what a plausible effect size might be. Then...
+
+- Analyze *all* your data.
+- Present *all* your comparisons, not just a select few.
+    - A big table, or even a graph, is what you want.
+- Make your data public.
+    - If the topic is worth studying, you should want others to be able to make rapid progress.
+
+## But I do studies with 80% power? (1/2)
+
+Based on some reasonable assumptions regarding main effects and interactions (specifically that the interactions are half the size of the main effects), you need **16 times** the sample size to estimate an interaction that you need to estimate a main effect.
+
+> And this implies a major, major problem with the usual plan of designing a study with a focus on the main effect, maybe even preregistering, and then looking to see what shows up in the interactions. 
+
+## But I do studies with 80% power? (2/2)
+
+> Or, even worse, designing a study, not finding the anticipated main effect, and then using the interactions to bail you out. The problem is not just that this sort of analysis is "exploratory"; it's that these data are a lot noisier than you realize, so what you think of as interesting exploratory findings could be just a bunch of noise.
+
+- Gelman [2018-03-15](http://andrewgelman.com/2018/03/15/need-16-times-sample-size-estimate-interaction-estimate-main-effect/)
+
+# A New Topic: Introducing Robust Linear Regression Methods
+
+## The `crimestat` data
+
+For each of 51 states (including the District of Columbia), we have the state's ID number, postal abbreviation and full name, as well as:
+
+- **crime** - the violent crime rate per 100,000 people
+- **poverty** - the official poverty rate (% of people living in poverty in the state/district) in 2014
+- **single** - the percentage of households in the state/district led by a female householder with no spouse present and with her own children under 18 years living in the household in 2016
+
+## The `crimestat` data set
+
+```{r}
+#| echo: true
+crimestat <- read_csv("c13/data/crimestat.csv", 
+                      show_col_types = FALSE)
+crimestat
+```
+
+## Modeling `crime` with `poverty` and `single`
+
+Our main goal will be to build a linear regression model to predict **crime** using centered versions of both **poverty** and **single**.
+
+```{r}
+#| echo: true
+crimestat <- crimestat |>
+    mutate(pov_c = poverty - mean(poverty),
+           single_c = single - mean(single))
+```
+
+## Our original (OLS) model
+
+Note the sneaky trick with the outside parentheses...
+
+```{r}
+#| echo: true
+(mod1 <- lm(crime ~ pov_c + single_c, data = crimestat))
+```
+
+## Coefficients?
+
+```{r}
+#| echo: true
+tidy(mod1, conf.int = TRUE) |>
+  select(term, estimate, std.error, 
+         p.value, conf.low, conf.high) |>
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 24)
+```
+
+## OLS Residuals
+
+```{r}
+par(mfrow=c(1,2))
+plot(mod1, which = c(1:2))
+par(mfrow = c(1,1))
+```
+
+## Remaining Residual Plots from OLS
+
+```{r}
+par(mfrow=c(1,2))
+plot(mod1, which = c(3, 5))
+par(mfrow = c(1,1))
+```
+
+## Which points are of special interest?
+
+Several points show up in the residual plots.
+
+```{r}
+#| echo: true
+crimestat |>
+  slice(c(2, 9, 25))
+```
+
+## Robust Linear Models (Huber weights)
+
+There are several ways to do robust linear regression using M-estimation, including weighting using Huber and bisquare strategies.
+
+- Robust linear regression here will make use of a method called iteratively re-weighted least squares (IRLS) to estimate models. 
+- M-estimation defines a weight function which is applied during estimation. 
+
+## Robust Linear Models (Huber weights)
+
+- The weights depend on the residuals and the residuals depend on the weights, so an iterative process is required.
+
+We'll fit the model, using the default weighting choice: what are called Huber weights, where observations with small residuals get a weight of 1, and the larger the residual, the smaller the weight. 
+
+## Our robust model (using `MASS::rlm`)
+
+```{r}
+#| echo: true
+rob.huber <- 
+  rlm(crime ~ pov_c + single_c, data = crimestat)
+```
+
+## Summary of the robust (Huber weights) model
+
+```{r}
+#| echo: true
+tidy(rob.huber) |>
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 24)
+```
+
+Now, *both* predictors appear to have estimates that exceed twice their standard error. So this is a very different result than ordinary least squares gave us.
+
+## Glance at the robust model (vs. OLS)
+
+```{r}
+#| echo: true
+glance(mod1) |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 24)
+
+glance(rob.huber) |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 24)
+```
+
+## Understanding the Huber weights
+
+Let's augment the data with results from this model, including the weights.
+
+```{r}
+#| echo: true
+crime_with_huber <- augment(rob.huber, crimestat) |>
+    mutate(w = rob.huber$w) |> arrange(w) 
+
+crime_with_huber |> 
+  select(sid, state, w, crime, pov_c, single_c, everything()) |>
+  head()
+```
+
+## Are cases with large residuals down-weighted?
+
+```{r}
+#| echo: true
+#| fig-height: 4
+ggplot(crime_with_huber, aes(x = w, y = abs(.resid))) +
+    geom_label(aes(label = state)) 
+```
+
+## Conclusions from the Plot of Weights
+
+- District of Columbia will be down-weighted the most, followed by Alaska and then Nevada and Mississippi. 
+- But many of the observations will have a weight of 1. 
+- In ordinary least squares, all observations would have weight 1.
+- So the more cases in the robust regression that have a weight close to one, the closer the results of the OLS and robust procedures will be.
+
+## summary(rob.huber)
+
+```{r}
+#| echo: true
+summary(rob.huber)
+```
+
+## Robust Linear Regression with the biweight
+
+As mentioned there are several possible weighting functions - we'll next try the **biweight**, also called the bisquare or Tukey's bisquare, in which all cases with a non-zero residual get down-weighted at least a little. 
+
+## Robust Linear Model with biweight
+
+Here is the resulting fit...
+
+```{r}
+#| echo: true
+
+(rob.biweight <- rlm(crime ~ pov_c + single_c,
+                    data = crimestat, psi = psi.bisquare))
+```
+
+## Coefficients and Standard Errors
+
+```{r}
+#| echo: true
+
+tidy(rob.biweight) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 24)
+```
+
+## Understanding the biweights weights a bit
+
+Let's augment the data, as above
+
+```{r}
+#| echo: true
+
+crime_with_biweights <- 
+  augment(rob.biweight, newdata = crimestat) |>
+  mutate(w = rob.biweight$w) |> 
+  arrange(w)
+
+head(crime_with_biweights, 3)
+```
+
+## Relationship of Weights and Residuals
+
+```{r}
+#| echo: true
+#| fig-height: 4
+
+ggplot(crime_with_biweights, aes(x = w, y = abs(.resid))) +
+    geom_label(aes(label = state)) 
+```
+
+## Conclusions from the biweights plot
+
+Again, cases with large residuals (in absolute value) are down-weighted generally, but here, Alaska and Washington DC receive no weight at all in fitting the final model.
+
+- We can see that the weight given to DC and Alaska is dramatically lower (in fact it is zero) using the bisquare weighting function than the Huber weighting function and the parameter estimates from these two different weighting methods differ. 
+- The maximum weight (here, for Alabama) for any state using the biweight is still slightly smaller than 1.
+
+## summary(rob.biweight)
+
+```{r}
+#| echo: true
+summary(rob.biweight)
+```
+
+## Comparing OLS and the two weighting schemes
+
+```{r}
+#| echo: true
+
+glance(mod1) |> select(1:6)
+glance(mod1) |> select(7:12)
+```
+
+## Comparing OLS and the two weighting schemes
+
+```{r}
+#| echo: true
+
+glance(rob.biweight) # biweights
+glance(rob.huber) # Huber weights
+```
+
+## Quantile Regression on the Median
+
+We can use the `rq` function in the `quantreg` package to model the **median** of our outcome (violent crime rate) on the basis of our predictors, rather than the mean, as is the case in ordinary least squares.
+
+```{r}
+#| echo: true
+
+rob.quan <- rq(crime ~ pov_c + single_c, data = crimestat)
+
+glance(rob.quan)
+```
+
+## summary(rob.quan)
+
+```{r}
+#| echo: true
+summary(rob.quan <- rq(crime ~ pov_c + single_c, 
+                       data = crimestat))
+```
+
+## Estimating a different quantile (tau = 0.70)
+
+In fact, if we like, we can estimate any quantile by specifying the `tau` parameter (here `tau` = 0.5, by default, so we estimate the median.)
+
+```{r}
+#| echo: true
+
+(rob.quan70 <- rq(crime ~ pov_c + single_c, tau = 0.70,
+                  data = crimestat))
+```
+
+## Comparing our Four Models {.smaller}
+
+**Estimating the Mean**
+
+Fit | Intercept CI | `pov_c` CI | `single_c` CI 
+---------: | ----------: | ----------: | ----------:  
+OLS | (`r 364.4 - 2*22.9`, `r 364.4 + 2*22.9`) | (`r 16.11 - 2*9.62`, `r 16.11 + 2*9.62`) | (`r 23.84 - 2*18.38`, `r round_half_up(23.84 + 2*18.38,2)`) 
+Robust (Huber) | (`r round_half_up(343.8 - 2*11.9,1)`, `r 343.8 + 2*11.9`) | (`r 11.91 - 2*5.51`, `r 11.91 + 2*5.51`) | (`r 30.99 - 2*10.53`, `r 30.99 + 2*10.53`) 
+Robust (biweight) | (`r 336.1 - 2*12.7`, `r 336.1 + 2*12.7`) | (`r round_half_up(10.32 - 2*5.31,2)`, `r 10.32 + 2*5.31`) | (`r 34.71 - 2*10.16`, `r 34.71 + 2*10.16`) 
+
+**Note**: CIs estimated for OLS and Robust methods as point estimate $\pm$ 2 standard errors
+
+**Estimating the Median**
+
+Fit | Intercept CI | `pov_c` CI | `single_c` CI | AIC | BIC
+-----------------: | ----------: | ----------: | ----------: 
+Quantile (Median) Reg | (336.9, 366.2) | (3.07, 28.96) | (4.46, 48,19) 
+
+## Comparing AIC and BIC
+
+
+Fit | AIC | BIC
+---------: | ----------: | ----------: 
+OLS | `r round_half_up(AIC(mod1), 1)` | `r round_half_up(BIC(mod1), 1)`
+Robust (Huber) | `r round_half_up(AIC(rob.huber), 1)` | `r round_half_up(glance(rob.huber)$BIC[1], 1)`
+Robust (biweight) | `r round_half_up(AIC(rob.biweight), 1)` | `r round_half_up(glance(rob.biweight)$BIC[1], 1)`
+Quantile (median) | `r round_half_up(AIC(rob.quan), 1)` | `r round_half_up(glance(rob.quan)$BIC[1], 1)`
+
+
+## Some Closing Thoughts (1/2)
+
+1. When comparing the results of a regular OLS regression and a robust regression for a data set which displays outliers, if the results are very different, you will most likely want to use the results from the robust regression. 
+    - Large differences suggest that the model parameters are being highly influenced by outliers. 
+
+## Some Closing Thoughts (2/2)
+
+2. Different weighting functions have advantages and drawbacks. 
+    - Huber weights can have difficulties with really severe outliers.
+    - Bisquare weights can have difficulties converging or may yield multiple solutions. 
+    - Quantile regression approaches have some nice properties, but describe medians (or other quantiles) rather than means.

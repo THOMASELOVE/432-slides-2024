@@ -1,0 +1,473 @@
+---
+title: "432 Class 14"
+author: Thomas E. Love, Ph.D.
+date: "2024-02-29"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 14 | 2024-02-29 | <https://thomaselove.github.io/432-2024/>"
+---
+
+## Today's Agenda
+
+1. Discussion of Quiz 1
+2. Introduction to Time-to-Event Data
+  - The Survival Function, S(t)
+    - Kaplan-Meier Estimation of the Survival Function
+    - Creating Survival Objects in R
+    - Drawing a Survival Curve
+    - Comparing Survival Curves with log-rank tests
+
+## Today's R Setup
+
+```{r}
+#| echo: true
+#| message: false
+knitr::opts_chunk$set(comment = NA)
+
+library(janitor)
+library(broom)
+library(gt)
+library(mosaic)
+library(rms)
+library(survival) ## new today
+library(survminer) ## new today
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+# Introduction to Time-to-Event Data
+
+## The **survex** Data Set
+
+```{r}
+#| echo: true
+survex <- read_csv("c14/data/survex.csv", 
+                   show_col_types = FALSE) |>
+  type.convert(as.is = FALSE)
+
+head(survex)
+```
+
+## Working with Time to Event Data
+
+In many medical studies, the main outcome variable is the time to the occurrence of a particular event. 
+
+- In a randomized controlled trial of cancer, for instance, surgery, radiation, and chemotherapy might be compared with respect to time from randomization and the start of therapy until death. 
+
+## Time-to-Event data
+
+- In this case, the event of interest is the death of a patient, but in other situations it might be remission from a disease, relief from symptoms or the recurrence of a particular condition. 
+- Such observations are generally referred to by the generic term survival data even when the endpoint or event being considered is not death but something else. 
+
+## What's in a Time-to-Event Study?
+
+Survival analysis is concerned with prospective studies. We start with a cohort of patients and follow them forwards in time to determine some clinical outcome. 
+
+- Follow-up continues until either some event of interest occurs, the study ends, or further observation becomes impossible. 
+
+## Time-to-Event (Survival) Outcomes
+
+The outcomes in a survival analysis consist of the patient's **fate** and **length of follow-up** at the end of the study. 
+
+- For some patients, the outcome of interest may not occur during follow-up. 
+- For such patients, whose follow-up time is *censored*, we know only that this event did not occur while the patient was being followed. We do not know whether or not it will occur at some later time.
+
+## Problems with Time to Event Data
+
+The primary problems are *censoring* and *non-Normality*...
+
+1. At the completion of the study, some patients may not have reached the endpoint of interest (death, relapse, etc.). Consequently, the exact survival times are not known. 
+
+   + All that is known is that the survival times are greater than the amount of time the individual has been in the study. 
+   + The survival times of these individuals are said to be **censored** (precisely, they are right-censored).
+
+## Problems with Time to Event Data
+
+The primary problems are *censoring* and *non-Normality*...
+
+2. Survival data are not symmetrically distributed. They will often appear positively skewed, with a few people surviving a very long time compared with the majority; so assuming a normal distribution will not be reasonable.
+
+Next, we'll define some special functions to build models that address these concerns.
+
+
+
+## The Survival Function, $S(t)$
+
+The **survival function**, $S(t)$ (sometimes called the survivor function) is the probability that the survival time, $T$, is greater than or equal to a particular time, $t$.
+
+- $S(t)$ = proportion of people surviving to time $t$ or beyond
+
+## If there's no censoring, the survival function is easy to estimate
+
+When there is no censoring, this function is easily estimated.
+
+$$
+\hat{S}(t) = \frac{\# \mbox{ of subjects with survival times } \geq t}{n}
+$$
+
+but this won't work if there is censoring.
+
+Even with censoring, the Kaplan-Meier approach essentially estimates the survival function by the number of patients alive at time $t$ divided by the total number of study subjects remaining at that time. 
+
+## Kaplan-Meier Estimator
+
+The Kaplan-Meier estimator first orders the (unique) survival times from smallest to largest, then estimates the survival function at each unique survival time.
+
+- The survival function at the second death time, $t_{(2)}$ is equal to the estimated probability of not dying at time $t_{(2)}$ conditional on the individual being still at risk at time $t_{(2)}$.
+
+## Kaplan-Meier Estimator
+
+1. Order the survival times from smallest to largest, where $t_{(j)}$ is the $j$th largest unique survival time, so we have...
+
+$$
+t_{(1)} \leq t_{(2)} \leq t_{(3)} \leq ... t_{(n)}
+$$
+
+## Kaplan-Meier Estimator
+
+2. The Kaplan-Meier estimate of the survival function is 
+
+$$
+\hat{S}(t) = \prod_{j: t_{(j)} \leq t} (1 - \frac{d_j}{r_j})
+$$
+
+where $r_j$ is the number of people at risk just before $t_{(j)}$, including those censored at time $t_{(j)}$, and $d_j$ is the number of people who experience the event at time $t_{(j)}$.
+
+## Creating a Survival Object in R
+
+The `Surv` function, part of the `survival` package in R, will create a **survival object** from two arguments:
+
+1. `time` = follow-up time
+2. `event` = a status indicator, where
+    + event = 1 or TRUE means the event was observed (for instance, the patient died)
+    + event = 0 or FALSE means the follow-up time was censored
+
+## The `survex` data frame
+
+The `survex.csv` file on our website is motivated by a similar file simulated by Frank Harrell and his team\footnote{see the rms package documentation} to introduce some of the key results from the `cph` function, which is part of the `rms` package in R.
+
+The `survex` data includes 1,000 subjects...
+
+## The `survex` data
+
+- `sub_id` = patient ID (1-1000)
+- `age` = patient's age at study entry, years
+- `grp` = patient's group (A or B)
+- `study_yrs` = patient's years of observed time in study until death or censoring
+- `death` = 1 if patient died, 0 if censored.
+
+## A first example: with $n = 100$
+
+```{r}
+#| echo: true
+
+set.seed(4322020) 
+ex100 <- sample_n(survex, 100, replace = F)
+ex100 |> select(sub_id, study_yrs, death) |> summary()
+```
+
+For a moment, let's focus on developing a survival object in this setting.
+
+## Relationship between `death` and `study_yrs`?
+
+- `study_yrs` here is follow-up time, in years
+- `death` = 1 if subject had the event (death), 0 if not.
+
+```{r}
+#| echo: true
+favstats(study_yrs ~ death, data = ex100) |>
+  gt() |> fmt_number(decimals = 2) |> tab_options(table.font.size = 24)
+```
+
+## Building a Survival Object
+
+```{r}
+#| echo: true
+surv_100 <- Surv(time = ex100$study_yrs, event = ex100$death)
+
+head(surv_100, 3)
+```
+
+- Subject 1 survived 3.047 years and then died.
+- Subject 2 survived 9.454 years before being censored.
+- Subject 3 survived 4.023 years before being censored.
+
+Remember that 17 of these 100 subjects died, the rest were censored at the latest time where they were seen for follow-up.
+
+## On dealing with time-to-event data
+
+You have these three subjects.
+
+1. Alice died in the hospital after staying for 20 days.
+2. Betty died at home on the 20th day after study enrollment, after staying in the hospital for the first ten days.
+3. Carol left the hospital after 20 days, but was then lost to follow up.
+
+## You plan a time-to-event analysis. 
+
+- How should you code "time" and "event" to produce a "time-to-event" object you can model if ...
+    + **death** is your primary outcome
+    + **length of hospital stay** is your primary outcome?
+
+## Building a Kaplan-Meier Estimate
+
+Remember that `surv_100` is the survival object we created.
+
+```{r}
+#| echo: true
+
+km_100 <- survfit(surv_100 ~ 1)
+
+print(km_100, print.rmean = TRUE)
+```
+
+- 17 events (deaths) occurred in 100 subjects.
+- Restricted mean survival time is 12.16 years (upper limit 14.8?)
+- Median survival time is NA (why?) but has a lower bound for 95% CI.
+
+## Kaplan-Meier Estimate 
+
+```{r}
+#| echo: true
+
+summary(km_100)
+```
+
+## Interpreting the K-M Estimate
+
+- Up to 0.641 years, no one died, but five people were censored (so 95 were at risk at that time). (Estimated survival probability = 0.989)
+- By the time of the next death at 1.312 years, only 87 people were still at risk. (Estimated Pr(survival) now 0.978)
+
+```
+Call: survfit(formula = surv_100 ~ 1)
+
+   time n.risk n.event survival std.err lower 95% CI upper 95% CI
+  0.641     95       1    0.989  0.0105        0.969        1.000
+  1.312     87       1    0.978  0.0153        0.949        1.000
+  1.690     82       1    0.966  0.0192        0.929        1.000
+etc.
+```
+
+## Kaplan-Meier Plot, via `survminer`
+
+- The solid line indicates survival probability at each time point (in years.) 
+- The crosses indicate time points where censoring has occurred.
+- The steps down indicate events (deaths.)
+- The shading indicates (by default, 95%) pointwise confidence intervals.
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggsurvplot(km_100, data = ex100)
+```
+
+## Where We Are So Far
+
+- Created a small (n = 100) simulated data frame, `ex100`.
+- Observed 17 deaths, and 83 subjects censored before death.
+- Survival object (containing time and fate) called `surv_100`
+- Created Kaplan-Meier estimate of survival function, called `km_100`.
+- Plotted the Kaplan-Meier estimate with `ggsurvplot()`.
+
+## Next steps
+
+1. Add a number at risk table to our Kaplan-Meier curve.
+2. Consider potential predictors (age and group) of our time-to-event outcome.
+
+## Adding a Number at Risk Table
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggsurvplot(km_100, data = ex100,
+   conf.int = TRUE,             # Add confidence interval
+   risk.table = TRUE,           # Add risk table
+   xlab = "Time in years",      # Adjust X axis label
+   break.time.by = 3            # X ticks every 3 years
+   )
+```
+
+## Comparing Survival, by Group
+
+Suppose we want to compare the survival functions for subjects classified by their group
+
+- So, for instance, in our sample, 8 of 32 in group A and 9 of 68 in group B had the event (died).
+
+```{r}
+#| echo: true
+
+ex100 |> tabyl(death, grp) |> adorn_totals()
+```
+
+## Estimated Survival Function, by Group
+
+```{r}
+#| echo: true
+
+km_100_grp <- survfit(surv_100 ~ ex100$grp)
+
+print(km_100_grp, print.rmean = TRUE)
+```
+
+- 8 of 32 group A subjects died; estimated restricted mean survival time is 10.2 years.
+- 9 of 68 in group B died, est. restricted mean survival = 13.0 years.
+
+## Kaplan-Meier Survival Function Estimates, by Group
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggsurvplot(km_100_grp, data = ex100,
+           conf.int = TRUE,
+           xlab = "Time in years",
+           break.time.by = 3,
+           risk.table = TRUE,
+           risk.table.height = 0.25, 
+           pval = TRUE)
+```
+
+## Testing the difference between 2 survival curves
+
+To obtain a significance test comparing these two survival curves, we turn to a log rank test, which tests the null hypothesis $H_0: S_1(t) = S_2(t)$ for all $t$ where the two exposures have survival functions $S_1(t)$ and $S_2(t)$.
+
+```{r}
+#| echo: true
+survdiff(surv_100 ~ ex100$grp)
+```
+
+## Alternative log rank tests
+
+An alternative is the *Peto and Peto modification of the Gehan-Wilcoxon test*, which results from adding `rho=1` to the `survdiff` function (`rho=0`, the default, yields the log rank test.)
+
+```{r}
+#| echo: true
+survdiff(surv_100 ~ ex100$grp, rho = 1)
+```
+
+## Alternative log rank tests
+
+- As compared to the log rank test, this Peto-Peto modification (and others using `rho > 0`) give greater weight to the left hand (earlier) side of the survival curves. 
+- To obtain chi-square tests that give greater weight to the right hand (later) side of the survival curves than the log rank test, use `rho < 0`.
+
+The log rank test generalizes to permit survival comparisons across more than two groups.
+
+## A Highly Customized K-M Plot
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggsurvplot(km_100_grp,              
+           data = ex100, 
+           palette = c("red", "blue"),
+           risk.table = TRUE,      
+           pval = TRUE,           
+           conf.int = TRUE,       
+           xlab = "Time in years", 
+           break.time.by = 3,     
+           ggtheme = theme_light(),
+           risk.table.y.text.col = T,
+           risk.table.height = 0.25, 
+           risk.table.y.text = FALSE,
+           ncensor.plot = TRUE,
+           ncensor.plot.height = 0.25,
+           conf.int.style = "step",
+           surv.median.line = "hv")
+```
+
+## Customizing the K-M Plot Further
+
+See <https://rpkgs.datanovia.com/survminer/> or <https://github.com/kassambara/survminer/> for many more options.
+
+Also, consider [this YouTube Video from Frank Harrell](https://www.youtube.com/watch?v=EoIB_Obddrk) entitled "[Survival Curves: Showing More by Showing Less](https://www.youtube.com/watch?v=EoIB_Obddrk)" which highlights the value of interactive approaches.
+
+## Comparing Survival Functions, by group, n = 1000
+
+```{r}
+#| echo: true
+surv_obj2 <- Surv(time = survex$study_yrs, 
+                 event = survex$death)
+
+km_grp2 <- survfit(surv_obj2 ~ survex$grp)
+
+survdiff(surv_obj2 ~ survex$grp)
+```
+
+## Kaplan-Meier Plot of Survival, by Group (n = 1000)
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggsurvplot(km_grp2, data = survex,
+           conf.int = TRUE,
+           pval = TRUE,
+           xlab = "Time in years",
+           break.time.by = 2,
+           risk.table = TRUE,
+           risk.table.height = 0.25)
+```
+
+## Kaplan-Meier Plot of Survival Percentage, Instead?
+
+Just add `fun = "pct"` to the plot.
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggsurvplot(km_grp2, data = survex, fun = "pct",
+           conf.int = TRUE,
+           pval = TRUE,
+           xlab = "Time in years",
+           break.time.by = 2,
+           risk.table = TRUE,
+           risk.table.height = 0.25)
+```
+
+## Plot Cumulative Event Rate
+
+Let's look at our original `km_100` model for 100 observations.
+
+- Add `fun = "event"` to our `ggsurvplot`.
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggsurvplot(km_100, data = survex, fun = "event",
+           xlab = "Time in years",
+           break.time.by = 2,
+           risk.table = TRUE,
+           risk.table.height = 0.25)
+```
+
+## Cumulative Event Rate for `km_grp2` model
+
+Let's look at our model for 1000 observations, that includes `grp`:
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggsurvplot(km_grp2, data = survex, fun = "event",
+           xlab = "Time in years",
+           break.time.by = 2,
+           risk.table = TRUE,
+           risk.table.height = 0.25)
+
+```
+
+## More to come on Time-to-Event Data
+
+after spring break...
+
+Next week, we'll start to tackle regression on count outcomes.
+
