@@ -5,7 +5,7 @@ date: "2024-03-05"
 format: docx
 ---
 
-## This Week's Topic
+## This Week's Main Topic
 
 **Regression Models for Count Outcomes**
 

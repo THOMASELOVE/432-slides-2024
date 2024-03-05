@@ -15,7 +15,7 @@ format:
     footer: "432 Class 15 | 2024-03-05 | <https://thomaselove.github.io/432-2024/>"
 ---
 
-## This Week's Topic
+## This Week's Main Topic
 
 **Regression Models for Count Outcomes**
 
