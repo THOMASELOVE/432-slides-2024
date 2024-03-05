@@ -10,8 +10,8 @@ format: docx
 **Regression Models for Count Outcomes**
 
 - Modeling approaches illustrated in these slides
-  - Poisson Regression and Zero-Inflated Poisson (ZIP)
-  - Negative Binomial Regression and Zero-Inflated Negative Binomial (ZINB)
+  - Poisson Regression & Zero-Inflated Poisson (ZIP)
+  - Negative Binomial Regression & Zero-Inflated Negative Binomial (ZINB)
   - Two types of Hurdle model (one Poisson, one NB)
 
 Chapters 24-26 of the Course Notes describe this material, as well as tobit regression, and some additional issues with certain types of count models.
