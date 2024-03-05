@@ -77,30 +77,6 @@ The Poisson probability model describes the probability of a given number of eve
 - If events occur with a constant mean rate, and independently of the time since the last event, the Poisson model is appropriate.
   - A Poisson model might fit poorly due to **overdispersion**, where the variance of Y is larger than we'd expect based on the mean of Y.
 
-## Poisson probability mass function
-
-$$
-Pr(Y = k) = \frac{\lambda^k e^{-\lambda}}{k!}
-$$
-
-- $k$ is the number of times an event occurs in an interval, and $k$ can take the values 0, 1, 2, 3, ...
-- The parameter $\lambda$ (lambda) is equal to the expected value (mean) of $Y$ and is also equal to the variance of $Y$.
-
-## Negative Binomial Distribution
-
-The Negative Binomial distribution models the number of failures in a sequence of independent and identically distributed Bernoulli trials before a specified number of successes occurs. 
-
-## Probability Mass Function
-
-Negative binomial's probability mass function is ...
-
-$$
-Pr(Y = k) = {{k + r - 1} \choose {k}} p^r(1-p)^{k}
-$$
-
-- $k$ is the number of failures (units of time) before the $r$th event occurs, and $k$ can take the values 0, 1, 2, 3, ...
-- The mean of the random variable Y which follows a negative binomial distribution is $rp/(1-p)$ and the variance is $rp/(1-p)^2$. 
-
 ## Poisson regression
 
 - Poisson regression assumes that the outcome Y follows a Poisson distribution, and that the logarithm of the expected value of Y (its mean) can be modeled by a linear combination of a set of predictors. 
