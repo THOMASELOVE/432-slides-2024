@@ -1,0 +1,933 @@
+---
+title: "432 Class 15"
+author: Thomas E. Love, Ph.D.
+date: "2024-03-05"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 15 | 2024-03-05 | <https://thomaselove.github.io/432-2024/>"
+---
+
+## This Week's Topic
+
+**Regression Models for Count Outcomes**
+
+- Modeling approaches illustrated in these slides
+  - Poisson Regression and Zero-Inflated Poisson (ZIP)
+  - Negative Binomial Regression and Zero-Inflated Negative Binomial (ZINB)
+  - Two types of Hurdle model (one Poisson, one NB)
+
+Chapters 24-26 of the Course Notes describe this material, as well as tobit regression, and some additional issues with certain types of count models.
+
+## `countreg` and `topmodels` packages
+
+To build rootograms to visualize the results of regression models on count outcomes, I have decided for the moment to continue to use the `countreg` and `topmodels` packages, which are currently available only on R-Forge. To install, type:
+
+```{r}
+#| echo: true
+#| eval: false
+install.packages("countreg", repos="http://R-Forge.R-project.org")
+install.packages("topmodels", repos="http://R-Forge.R-project.org")
+```
+
+into the R Console within R Studio. 
+
+## Setup
+
+```{r}
+#| echo: true
+#| warning: false
+#| message: false
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 60)
+
+library(janitor); library(gt); library(broom) 
+library(mosaic); library(Hmisc); library(patchwork)
+library(rsample); library(yardstick)
+library(conflicted)      ## resolve conflicts
+library(countreg)        ## for rootograms
+library(topmodels)       ## for rootograms
+library(MASS)            ## for glm.nb to fit NB models
+library(pscl)            ## for zero-inflated and hurdle fits
+library(lmtest)          ## for Vuong test
+library(tidyverse)
+
+conflicts_prefer(dplyr::select(), dplyr::filter(), base::sum(),
+                 pscl::zeroinfl(), pscl::hurdle())
+
+theme_set(theme_bw())
+```
+
+# An Overview
+
+## GLMs for Count Outcomes
+
+We want to build a generalized linear model to predict count data using one or more predictors.
+
+Count data are non-negative integers (0, 1, 2, 3, ...)
+
+- the number of COVID-19 hospitalizations in Ohio yesterday
+- the number of mutations within a particular search grid
+- days in the past 30 where your mental health was poor
+
+We'll use the Poisson and Negative Binomial probability distributions.
+
+## The Poisson Probability Distribution
+
+The Poisson probability model describes the probability of a given number of events occurring in a fixed interval of time or space.
+
+- If events occur with a constant mean rate, and independently of the time since the last event, the Poisson model is appropriate.
+  - A Poisson model might fit poorly due to **overdispersion**, where the variance of Y is larger than we'd expect based on the mean of Y.
+
+## Poisson probability mass function
+
+$$
+Pr(Y = k) = \frac{\lambda^k e^{-\lambda}}{k!}
+$$
+
+- $k$ is the number of times an event occurs in an interval, and $k$ can take the values 0, 1, 2, 3, ...
+- The parameter $\lambda$ (lambda) is equal to the expected value (mean) of $Y$ and is also equal to the variance of $Y$.
+
+## Negative Binomial Distribution
+
+The Negative Binomial distribution models the number of failures in a sequence of independent and identically distributed Bernoulli trials before a specified number of successes occurs. 
+
+## Probability Mass Function
+
+Negative binomial's probability mass function is ...
+
+$$
+Pr(Y = k) = {{k + r - 1} \choose {k}} p^r(1-p)^{k}
+$$
+
+- $k$ is the number of failures (units of time) before the $r$th event occurs, and $k$ can take the values 0, 1, 2, 3, ...
+- The mean of the random variable Y which follows a negative binomial distribution is $rp/(1-p)$ and the variance is $rp/(1-p)^2$. 
+
+## Poisson regression
+
+- Poisson regression assumes that the outcome Y follows a Poisson distribution, and that the logarithm of the expected value of Y (its mean) can be modeled by a linear combination of a set of predictors. 
+  - A Poisson regression makes the strong assumption that the variance of Y is equal to its mean.
+
+We will use `glm` to fit Poisson models, by using `family = "Poisson"`.
+
+## Dealing with Overdispersion
+
+A Poisson model might fit poorly due to **overdispersion**, where the variance of Y is larger than we'd expect based on the mean of Y.
+
+- *Quasipoisson* models are available which estimate an overdispersion parameter, but we'll skip those for now.
+
+Instead, we'll look at other ways (especially zero-inflation and the negative binomial models) to address overdispersion.
+
+## Negative Binomial Regression
+
+- Negative binomial regression is a generalization of Poisson regression which loosens the assumption that the variance of Y is equal to its mean, and thus produces models which fit a broader class of data.
+
+We will demonstrate the use of `glm.nb()` from the `MASS` package to fit negative binomial regression models.
+
+## Zero-inflated approaches
+
+- Both the Poisson and Negative Binomial regression approaches may under-estimate the number of zeros compared to the data.
+- To better match the zero counts, zero-inflated models fit:
+  - a logistic regression to predict the extra zeros, along with
+  - a Poisson or Negative Binomial model to predict the counts, including some zeros.
+
+We'll use `zeroinfl()` from `pscl` to fit ZIP and ZINB regressions.
+
+## Hurdle models
+
+A hurdle model predicts the count outcome by making an assumption that there are two processes at work:
+
+- a process that determines whether the count is zero or not zero (usually using logistic regression), and
+- a process that determines the count when we know the subject has a positive count (usually using a truncated Poisson or NB model where no zeros are predicted)
+
+We use `hurdle()` from `pscl` to fit these.
+
+## Comparing Models
+
+1. A key tool will be a graphical representation of the fit of the models to the count outcome, called a **rootogram**. We'll use the rootograms produced by the `countreg` and `topmodels` packages to help us.
+2. We'll also demonstrate a Vuong hypothesis testing approach (from the `lmtest` package) to help us make decisions between various types of Poisson models or various types of Negative Binomial models on the basis of improvement in fit of things like bias-corrected AIC or BIC.
+
+## Comparing Models
+
+3. We'll also demonstrate the calculation of pseudo-R square statistics for comparing models, which can be compared in a validation sample as well as in the original modeling sample.
+
+# The `medicare` data
+
+## The `medicare` example
+
+Source: `NMES1988` data in R's `AER` package, cleaned up to `medicare.csv`.
+
+Essentially the same data are used in [\textcolor{blue}{my main resource}](http://data.library.virginia.edu/getting-started-with-hurdle-models/) from the University of Virginia on hurdle models.
+
+Data are a cross-section US National Medical Expenditure Survey (NMES) conducted in 1987 and 1988. The NMES is based upon a representative, national probability sample of the civilian non-institutionalized population and individuals admitted to long-term care facilities during 1987. 
+
+## Ingesting `medicare` data
+
+The data are a subsample of individuals ages 66 and over all of whom are covered by Medicare (a public insurance program providing substantial protection against health-care costs), and some of whom also have private supplemental insurance.
+
+```{r}
+#| echo: true
+medicare <- read_csv("c15/data/medicare.csv", show_col_types = FALSE) |> 
+  mutate(across(where(is_character), as_factor),
+         subject = as.character(subject))
+```
+
+## The `medicare` code book {.smaller}
+
+Variable | Description
+---------: | --------------------------
+`subject`  | subject number (code)
+`visits`   | outcome: # of physician office visits
+`hospital` | # of hospital stays
+`health`   | self-rated health (poor, average, excellent)
+`chronic`  | # of chronic conditions
+`sex`      | male or female
+`school`   | years of education
+`insurance` | subject (also) has private insurance? (yes/no)
+
+### Today's Goal
+
+Predict `visits` using main effects of the 6 predictors (excluding `subject`)
+
+## The `medicare` tibble
+
+```{r}
+#| echo: true
+medicare |> select(-subject)
+```
+
+## Quick Summary of `medicare` {.smaller}
+
+```{r}
+#| echo: true
+medicare |> select(-subject) |> summary()
+```
+
+### Adjust order of `insurance`
+
+```{r}
+#| echo: true
+medicare <- medicare |>
+  mutate(insurance = fct_relevel(insurance, "no", "yes"))
+```
+
+I want No first, then Yes, when building models.
+
+## Our outcome, `visits`
+
+```{r}
+#| echo: true
+favstats(~ visits, data = medicare)
+describe(medicare$visits) # from Hmisc
+```
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(medicare, aes(x = visits)) +
+    geom_histogram(binwidth = 1, fill = "royalblue", 
+                   col = "white") +
+    labs(y = "Number of Patients", x = "Number of Visits")
+```
+
+## Partitioning the Data 
+
+Creating Training and Testing Samples with `rsample` functions...
+
+```{r}
+#| echo: true
+set.seed(432)
+med_split <- initial_split(medicare, prop = 0.75)
+
+med_train = training(med_split)
+med_test = testing(med_split)
+```
+
+I've held out 25% of the `medicare` data for the test sample.
+
+```{r}
+#| echo: true
+dim(med_train); dim(med_test)
+```
+
+## Reiterating the Goal {.smaller}
+
+Predict `visits` using some combination of these 6 predictors...
+
+Predictor | Description
+---------: | ----------------------------------------------
+`hospital` | # of hospital stays
+`health`   | self-rated health (poor, average, excellent)
+`chronic`  | # of chronic conditions
+`sex`      | male or female
+`school`   | years of education
+`insurance` | subject (also) has private insurance? (yes/no)
+
+We'll build separate training and test samples to help us validate.
+
+# `mod_1`: A Poisson Regression
+
+## Poisson Regression
+
+Assume our count data (`visits`) follows a Poisson distribution with a mean conditional on our predictors.
+
+```{r}
+#| echo: true
+mod_1 <- glm(visits ~ hospital + health + chronic +
+                  sex + school + insurance,
+              data = med_train, family = "poisson")
+```
+
+The Poisson model uses a logarithm as its link function, so the model is actually predicting log(`visits`).
+
+Note that we're fitting the model here using the training sample alone.
+
+## Complete `mod_1` Summary
+
+```{r}
+#| echo: true
+summary(mod_1)
+```
+
+
+## `mod_1` (Poisson) model coefficients
+
+```{r}
+#| echo: true
+tidy(mod_1) |> gt() |> fmt_number(decimals = 3)
+```
+
+Harry and Larry have the same values for all other predictors but only Harry has private insurance. `mod_1` estimates Harry's log(`visits`) to be `r tidy(mod_1) |> filter(term == "insuranceyes") |> select(estimate) |> round_half_up(digits = 3)` larger than Larry's log(`visits`).
+
+## Visualize fit: (Hanging) Rootogram
+
+```{r}
+#| echo: true
+plot(rootogram(mod_1, plot = FALSE), xlim = c(0, 90), 
+               main = "Rootogram for mod_1: Poisson")
+```
+
+See the next slide for details on how to interpret this...
+
+## Interpreting the Rootogram {.smaller}
+
+- The red curved line is the theoretical Poisson fit. 
+- "Hanging" from each point on the red line is a bar, the height of which represents the observed counts. 
+    - A bar hanging below 0 indicates that the model under-predicts that value. (Model predicts fewer values than the data show.)
+    - A bar hanging above 0 indicates over-prediction of that value. (Model predicts more values than the data show.)
+- The counts have been transformed with a square root transformation to prevent smaller counts from getting obscured and overwhelmed by larger counts. 
+- <https://arxiv.org/pdf/1605.01311> has more on rootograms.
+- Our Poisson model (`mod_1`) doesn't fit enough zeros or ones, and fits too many 3-12 values, then not enough of the higher values.
+
+## Store `mod_1` Predictions
+
+We'll use the `augment` function to store the predictions within our training sample. Note the use of `"response"` to predict `visits`, not log(`visits`).
+
+```{r}
+#| echo: true
+mod_1_aug <- augment(mod_1, med_train, 
+                     type.predict = "response")
+
+mod_1_aug |> select(subject, visits, .fitted) |> head(3)
+```
+
+## Training Sample `mod_1` Fit
+
+Within our training sample, `mod_1_aug` now contains both the actual counts (`visits`) and the predicted counts (in `.fitted`) from `mod_1`. We'll summarize the fit...
+
+```{r}
+#| echo: true
+mets <- metric_set(rsq, rmse, mae)
+mod_1_summary <- 
+  mets(mod_1_aug, truth = visits, estimate = .fitted) |>
+  mutate(model = "mod_1") |> relocate(model)
+mod_1_summary |> gt() |> fmt_number(decimals = 3)
+```
+
+These will become interesting as we build additional models.
+
+# `mod_2`: A Negative Binomial Regression
+
+## Fitting the Negative Binomial Model
+
+The negative binomial model requires the estimation of an additional parameter, called $\theta$ (theta). The default link for this generalized linear model is also a logarithm, like the Poisson.
+
+```{r}
+#| echo: true
+mod_2 <- MASS::glm.nb(visits ~ hospital + health + chronic +
+                  sex + school + insurance,
+              data = med_train)
+```
+
+The estimated dispersion parameter value $\theta$ is...
+
+```{r}
+#| echo: true
+summary(mod_2)$theta
+```
+
+The Poisson model is essentially the negative binomial model assuming a known $\theta = 1$.
+
+## Complete `mod_2` summary
+
+```{r}
+#| echo: true
+summary(mod_2)
+```
+
+
+## `mod_2` (NB) coefficients
+
+```{r}
+#| echo: true
+tidy(mod_2) |> gt() |> fmt_number(decimals = 3)
+```
+
+## Rootogram for NB Model
+
+```{r}
+#| echo: true
+plot(rootogram(mod_2, plot = FALSE), xlim = c(0, 90), 
+               main = "Rootogram for mod_2: Negative Binomial")
+```
+
+Does this look better than the Poisson rootogram?
+
+## Store `mod_2` Predictions
+
+```{r}
+#| echo: true
+#| warning: false
+mod_2_aug <- augment(mod_2, med_train, type.predict = "response")
+
+mod_2_aug |> select(subject, visits, .fitted) |> head(3)
+```
+
+- Note that this *may* throw a warning about who maintains tidiers for `negbin` models. I'd silence it, as I have here.
+
+## Training Fit for `mod_2`
+
+`mod_2_aug` has actual (`visits`) and predicted counts (in `.fitted`.)
+
+```{r}
+#| echo: true
+mod_2_summary <- 
+  mets(mod_2_aug, truth = visits, estimate = .fitted) |>
+  mutate(model = "mod_2") |> relocate(model)
+mod_2_summary |> gt() |> fmt_number(decimals = 3)
+```
+
+## Training Sample So Far
+
+The reasonable things to summarize in sample look like the impressions from the rootograms and the summaries we've prepared so far.
+
+Model | Rootogram impressions
+-----: | -------------------------------------------
+`mod_1` (P) | Many problems. Data appear overdispersed.
+`mod_2` (NB) | Still not enough zeros; some big predictions.
+
+## Training Sample Summaries
+
+```{r}
+#| echo: true
+bind_rows(mod_1_summary, mod_2_summary) |> 
+  pivot_wider(names_from = model, 
+              values_from = .estimate) |> 
+  gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+# `mod_3`: Zero-Inflated Poisson (ZIP) Model
+
+## Zero-Inflated Poisson (ZIP) model
+
+The zero-inflated Poisson model describes count data with an excess of zero counts. 
+
+The model posits that there are two processes involved:
+
+- a logistic regression model is used to predict excess zeros
+- while a Poisson model is used to predict the counts
+
+We'll use the `pscl` package to fit zero-inflated models.
+
+```{r}
+#| echo: true
+mod_3 <- pscl::zeroinfl(visits ~ hospital + health + 
+                    chronic + sex + school + insurance,
+                    data = med_train)
+```
+
+## `mod_3` ZIP coefficients
+
+Sadly, there's no `broom` tidying functions for these zero-inflated models.
+
+```{r}
+#| echo: true
+summary(mod_3)
+```
+
+## Rootogram for ZIP model
+
+```{r}
+#| echo: true
+plot(rootogram(mod_3, plot = FALSE), xlim = c(0, 90), 
+               main = "Rootogram for mod_3: ZIP")
+```
+
+## Store `mod_3` Predictions
+
+We have no `augment` or other `broom` functions available for zero-inflated models, so ...
+
+```{r}
+#| echo: true
+mod_3_aug <- med_train |>
+    mutate(".fitted" = predict(mod_3, type = "response"),
+           ".resid" = resid(mod_3, type = "response"))
+
+mod_3_aug |> select(subject, visits, .fitted, .resid) |>
+  head(3)
+```
+
+## Training: `mod_3` Fit
+
+`mod_3_aug` now has actual (`visits`) and predicted counts (in `.fitted`) from `mod_3`, just as we set up for the previous two models. 
+
+```{r}
+#| echo: true
+mod_3_summary <- 
+  mets(mod_3_aug, truth = visits, estimate = .fitted) |>
+  mutate(model = "mod_3") |> relocate(model)
+mod_3_summary |> gt() |> fmt_number(decimals = 3)
+```
+
+## Training: Through `mod_3`
+
+```{r}
+#| echo: true
+bind_rows(mod_1_summary, mod_2_summary, mod_3_summary) |> 
+  pivot_wider(names_from = model, 
+              values_from = .estimate) |> 
+  gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+Remember we want a larger $R^2$ and smaller values of RMSE and MAE.
+
+## Comparing models with Vuong
+
+Vuong's test compares predicted probabilities (for each count) in two non-nested models. How about Poisson vs. ZIP?
+
+```{r}
+#| echo: true
+vuong(mod_1, mod_3)
+```
+
+The large negative z-statistic indicates `mod_3` (ZIP) fits better than `mod_1` (Poisson) in our training sample.
+
+# `mod_4`: Zero-Inflated Negative Binomial (ZINB) Model
+
+## Zero-Inflated Negative Binomial (ZINB) model
+
+As in the ZIP, we assume there are two processes involved:
+
+- a logistic regression model is used to predict excess zeros
+- while a negative binomial model is used to predict the counts
+
+We'll use the `pscl` package again and the `zeroinfl` function.
+
+```{r}
+#| echo: true
+mod_4 <- zeroinfl(visits ~ hospital + health + chronic +
+                  sex + school + insurance,
+              dist = "negbin", data = med_train)
+```
+
+## `mod_4` summary
+
+```{r}
+#| echo: true
+summary(mod_4)
+```
+
+## Rootogram for ZINB model
+
+```{r}
+#| echo: true
+
+plot(rootogram(mod_4, plot = FALSE), xlim = c(0, 90), 
+               main = "Rootogram for mod_4: ZINB")
+```
+
+## Store `mod_4` Predictions
+
+Again, there is no `augment` or other `broom` functions available for zero-inflated models, so ...
+
+```{r}
+#| echo: true
+mod_4_aug <- med_train |>
+    mutate(".fitted" = predict(mod_4, type = "response"),
+           ".resid" = resid(mod_4, type = "response"))
+
+mod_4_aug |> select(subject, visits, .fitted, .resid) |>
+  head(3)
+```
+
+## Training Sample `mod_4` Fit
+
+`mod_4_aug` now has actual (`visits`) and predicted counts (in `.fitted`) from `mod_4`. 
+
+```{r}
+#| echo: true
+mod_4_summary <- 
+  mets(mod_4_aug, truth = visits, estimate = .fitted) |>
+  mutate(model = "mod_4") |> relocate(model)
+mod_4_summary |> gt() |> fmt_number(decimals = 3)
+```
+
+## Training Sample through `mod_4`
+
+```{r}
+#| echo: true
+bind_rows(mod_1_summary, mod_2_summary, 
+          mod_3_summary, mod_4_summary) |> 
+  pivot_wider(names_from = model, 
+              values_from = .estimate) |> 
+  gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+What do you think?
+
+## Comparing models with Vuong
+
+How about Negative Binomial vs. ZINB?
+
+```{r}
+#| echo: true
+vuong(mod_4, mod_2)
+```
+
+The large positive z-statistics indicate `mod_4` (ZINB) fits better than `mod_2` (Negative Binomial) in our training sample.
+
+# Validation in the Test Sample for our Four Models?
+
+## Validation: Test Sample Predictions
+
+Predict the `visit` counts for each subject in our test sample.
+
+```{r}
+#| echo: true
+test_1 <- predict(mod_1, newdata = med_test,
+                  type.predict = "response")
+test_2 <- predict(mod_2, newdata = med_test,
+                  type.predict = "response")
+test_3 <- predict(mod_3, newdata = med_test,
+                  type.predict = "response")
+test_4 <- predict(mod_4, newdata = med_test,
+                  type.predict = "response")
+```
+
+## Create a Tibble with Predictions
+
+Combine the various predictions into a tibble with the original data.
+
+```{r}
+#| echo: true
+test_res <- bind_cols(med_test, 
+              pre_m1 = test_1, pre_m2 = test_2, 
+              pre_m3 = test_3, pre_m4 = test_4)
+
+names(test_res)
+```
+
+## Summarize fit in test sample for each model
+
+```{r}
+#| echo: true
+m1_sum <- mets(test_res, truth = visits, estimate = pre_m1) |>
+  mutate(model = "mod_1") 
+m2_sum <- mets(test_res, truth = visits, estimate = pre_m2) |>
+  mutate(model = "mod_2") 
+m3_sum <- mets(test_res, truth = visits, estimate = pre_m3) |>
+  mutate(model = "mod_3")
+m4_sum <- mets(test_res, truth = visits, estimate = pre_m4) |>
+  mutate(model = "mod_4")
+
+test_sum <- bind_rows(m1_sum, m2_sum, m3_sum, m4_sum)
+```
+
+## Validation Results: Four Models
+
+```{r}
+#| echo: true
+test_sum <- bind_rows(m1_sum, m2_sum, m3_sum, m4_sum) |>
+  pivot_wider(names_from = model, 
+              values_from = .estimate)
+
+test_sum |>
+  select(-.estimator) |> 
+  gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+- Which model looks best? Is it an obvious choice?
+
+# Hurdle Models
+
+## The Hurdle Model 
+
+The hurdle model is a two-part model that specifies one process for zero counts and another process for positive counts. The idea is that positive counts occur once a threshold is crossed, or put another way, a hurdle is cleared. If the hurdle is not cleared, then we have a count of 0.
+
+- The first part of the model is typically a **binary logistic regression** model. This models whether an observation takes a positive count or not. 
+- The second part of the model is usually a truncated Poisson or Negative Binomial model. Truncated means we're only fitting positive counts, and not zeros. 
+
+# `mod_5`: Poisson-Logistic Hurdle Model
+
+## Fitting a Hurdle Model / Poisson-Logistic
+
+In fitting a hurdle model to our medicare training data, the interpretation would be that one process governs whether a patient visits a doctor or not, and another process governs how many visits are made.
+
+## The `mod_5` model
+
+```{r}
+#| echo: true
+mod_5 <- hurdle(visits ~ hospital + health + chronic +
+                  sex + school + insurance,
+              dist = "poisson", zero.dist = "binomial", 
+              data = med_train)
+mod_5
+```
+
+## `mod_5` summary
+
+```{r}
+#| echo: true
+
+summary(mod_5)
+```
+
+## Rootogram for Poisson-Logistic Hurdle model
+
+```{r}
+#| echo: true
+plot(rootogram(mod_5, plot = FALSE), xlim = c(0, 90), 
+               main = "mod_5 Poisson-Logistic Hurdle")
+```
+
+## Store `mod_5` Predictions
+
+No `augment` or other `broom` functions for hurdle models, so ...
+
+```{r}
+#| echo: true
+mod_5_aug <- med_train |>
+    mutate(".fitted" = predict(mod_5, type = "response"),
+           ".resid" = resid(mod_5, type = "response"))
+
+mod_5_aug |> select(subject, visits, .fitted, .resid) |>
+  head(3)
+```
+
+## Training Sample `mod_5` Fit
+
+```{r}
+#| echo: true
+mod_5_summary <- 
+  mets(mod_5_aug, truth = visits, estimate = .fitted) |>
+  mutate(model = "mod_5") |> relocate(model)
+mod_5_summary |> gt() |> fmt_number(decimals = 3)
+```
+
+## Training Sample through `mod_5`
+
+```{r}
+#| echo: true
+bind_rows(mod_1_summary, mod_2_summary, mod_3_summary, 
+          mod_4_summary, mod_5_summary) |> 
+  pivot_wider(names_from = model, 
+              values_from = .estimate) |> 
+  gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+What do you think?
+
+## Are ZIP and Poisson-Logistic Hurdle the Same?
+
+```{r}
+#| echo: true
+temp_check <- tibble(
+  subject = mod_3_aug$subject,
+  visits = mod_3_aug$visits,
+  pred_zip = mod_3_aug$.fitted,
+  pred_hur = mod_5_aug$.fitted,
+  diff = pred_hur - pred_zip)
+
+favstats(~ diff, data = temp_check)
+```
+
+## Vuong test: `mod_3` vs. `mod_5`
+
+```{r}
+#| echo: true
+vuong(mod_3, mod_5)
+```
+
+There's some evidence `mod_3` (ZIP) fits a bit better than `mod_5` (Hurdle) in our training sample, though the p value (barely) exceeds 0.05.
+
+# `mod_6`: Negative Binomial-Logistic Hurdle Model
+
+## Hurdle Model / NB-Logistic
+
+```{r}
+#| echo: true
+mod_6 <- hurdle(visits ~ hospital + health + chronic +
+                  sex + school + insurance,
+              dist = "negbin", zero.dist = "binomial", 
+              data = med_train)
+mod_6
+```
+
+
+## `mod_6` Summary
+
+```{r}
+#| echo: true
+
+summary(mod_6)
+```
+
+
+## Rootogram for NB-Logistic Hurdle model
+
+```{r}
+#| echo: true
+
+plot(rootogram(mod_6, plot = FALSE), xlim = c(0, 90), 
+               main = "mod_6 Neg. Bin.-Logistic Hurdle")
+```
+
+## Store `mod_6` Predictions
+
+```{r}
+#| echo: true
+mod_6_aug <- med_train |>
+    mutate(".fitted" = predict(mod_6, type = "response"),
+           ".resid" = resid(mod_6, type = "response"))
+
+mod_6_aug |> select(subject, visits, .fitted, .resid) |>
+  head(3)
+```
+
+## Training Sample `mod_6` Fit
+
+```{r}
+#| echo: true
+mod_6_summary <- 
+  mets(mod_6_aug, truth = visits, estimate = .fitted) |>
+  mutate(model = "mod_6") |> relocate(model)
+mod_6_summary |> 
+  gt() |> fmt_number(decimals = 3)
+```
+
+## Training Sample through `mod_6`
+
+```{r}
+#| echo: true
+bind_rows(mod_1_summary, mod_2_summary, mod_3_summary, 
+          mod_4_summary, mod_5_summary, mod_6_summary) |> 
+  pivot_wider(names_from = model, values_from = .estimate) |> 
+  select(-.estimator) |> 
+  gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+## Vuong test: `mod_4` vs. `mod_6`
+
+```{r}
+#| echo: true
+vuong(mod_4, mod_6)
+```
+
+There's some evidence `mod_4` (ZINB) fits better than `mod_6` (NB Hurdle) in our training sample, but not much, based on the large *p* value.
+
+# Validation including Hurdle Models
+
+## Validation: Test Sample Predictions
+
+Predict the `visit` counts for each subject in our test sample.
+
+```{r}
+#| echo: true
+test_5 <- predict(mod_5, newdata = med_test,
+                  type.predict = "response")
+test_6 <- predict(mod_6, newdata = med_test,
+                  type.predict = "response")
+```
+
+## Create a Tibble with Predictions
+
+Combine the various predictions into a tibble with the original data.
+
+```{r}
+#| echo: true
+test_res6 <- bind_cols(med_test, 
+              pre_m1 = test_1, pre_m2 = test_2, 
+              pre_m3 = test_3, pre_m4 = test_4, 
+              pre_m5 = test_5, pre_m6 = test_6)
+
+names(test_res6)
+```
+
+## Summarize fit in test sample for each model
+
+```{r}
+#| echo: true
+m1_sum <- mets(test_res6, truth = visits, estimate = pre_m1) |>
+  mutate(model = "mod_1") 
+m2_sum <- mets(test_res6, truth = visits, estimate = pre_m2) |>
+  mutate(model = "mod_2") 
+m3_sum <- mets(test_res6, truth = visits, estimate = pre_m3) |>
+  mutate(model = "mod_3")
+m4_sum <- mets(test_res6, truth = visits, estimate = pre_m4) |>
+  mutate(model = "mod_4")
+m5_sum <- mets(test_res6, truth = visits, estimate = pre_m5) |>
+  mutate(model = "mod_5")
+m6_sum <- mets(test_res6, truth = visits, estimate = pre_m6) |>
+  mutate(model = "mod_6")
+
+test_sum6 <- bind_rows(m1_sum, m2_sum, m3_sum, m4_sum,
+                      m5_sum, m6_sum)
+```
+
+## Validation Results in Test Sample
+
+```{r}
+#| echo: true
+test_sum6 <- bind_rows(m1_sum, m2_sum, m3_sum, m4_sum,
+                      m5_sum, m6_sum) |>
+  pivot_wider(names_from = model, 
+              values_from = .estimate)
+
+test_sum6 |>
+  select(-.estimator) |> 
+  gt() |> fmt_number(decimals = 4) |> 
+  tab_options(table.font.size = 20)
+```
+
+- Now which model would you choose?
+
+## After Spring Break
+
+- Project A due at noon on **Monday 2023-03-18**
+- Will get started on Project B once Project A is submitted
+- Regression on Multi-Categorical Outcomes will be our first new topic
+
