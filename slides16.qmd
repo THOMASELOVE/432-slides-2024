@@ -1,0 +1,568 @@
+---
+title: "432 Class 16"
+author: Thomas E. Love, Ph.D.
+date: "2024-03-07"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 16 | 2024-03-07 | <https://thomaselove.github.io/432-2024/>"
+---
+
+## Today's Agenda
+
+- Can we fit a linear model to a count outcome?
+- Selecting non-linear terms in light of Spearman $\rho^2$ 
+- Fitting a Poisson regression with the `rms` package
+- Checking Assumptions in Logistic Regression Models
+
+## Setup
+
+```{r}
+#| echo: true
+#| message: false
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor); library(gt); library(broom) 
+library(rsample); library(yardstick)
+library(car)
+library(countreg)        ## for rootograms
+library(topmodels)       ## for rootograms
+library(rms)
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+# Could we fit a linear model for a count outcome? Revisiting Class 15
+
+## The `medicare` data from Class 15
+
+```{r}
+#| echo: true
+medicare <- read_csv("c16/data/medicare.csv", show_col_types = FALSE) |> 
+  mutate(across(where(is_character), as_factor),
+         subject = as.character(subject), 
+         insurance = fct_relevel(insurance, "no", "yes"),
+         logvisits = log(visits + 1)) ## needed because some have 0 visits
+
+set.seed(432)
+med_split <- initial_split(medicare, prop = 0.75)
+
+med_train = training(med_split)
+med_test = testing(med_split)
+```
+
+## The `medicare` data
+
+```{r}
+#| echo: true
+medicare
+```
+
+
+## Reiterating the Goal
+
+Predict `visits` using these 6 predictors...
+
+Predictor | Description
+---------: | ----------------------------------------------
+`hospital` | # of hospital stays
+`health`   | self-rated health (poor, average, excellent)
+`chronic`  | # of chronic conditions
+`sex`      | male or female
+`school`   | years of education
+`insurance` | subject (also) has private insurance? (yes/no)
+
+## Linear Model for our Count Outcome
+
+Let's fit a **linear regression** (`mod_0`: note *log* transformation) to go along with the Poisson regression (`mod_1`) we fit last time.
+
+```{r}
+#| echo: true
+mod_0 <- lm(log(visits+1) ~ hospital + health + chronic + sex + school + 
+              insurance, data = med_train)
+
+mod_1 <- glm(visits ~ hospital + health + chronic + sex + school + 
+               insurance, data = med_train, family = "poisson")
+```
+
+## Linear Model Coefficients?
+
+```{r}
+#| echo: true
+## linear model
+tidy(mod_0) |> gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+## Poisson Model Coefficients?
+
+```{r}
+#| echo: true
+## Poisson model
+tidy(mod_1) |> gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+## Linear Regression Assumptions?
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod_0, which = 1:2)
+```
+
+## Linear Regression Assumptions?
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod_0, which = c(3,5))
+```
+
+## Poisson Regression Plots?
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod_1, which = 1:2)
+```
+
+## Poisson Regression Plots
+
+```{r}
+#| echo: true
+par(mfrow = c(1,2)); plot(mod_1, which = c(3, 5))
+```
+
+## Rootogram for Linear Model
+
+```{r}
+rootogram(mod_0)
+```
+
+## Rootogram for Poisson Model
+
+```{r}
+rootogram(mod_1)
+```
+
+
+## Test Sample Results (1st 6 subjects)
+
+Actual `visits` seen in the test sample:
+
+```{r}
+head(med_test$visits)
+```
+
+Predicted `visits` From our linear model (`mod_0`):
+
+```{r}
+#| echo: true
+test_0 <- 
+  exp(predict(mod_0, newdata = med_test, type.predict = "response")) - 1
+
+head(test_0)
+```
+
+Predicted `visits` from our Poisson model (`mod_1`):
+
+```{r}
+#| echo: true
+test_1 <- predict(mod_1, newdata = med_test, type = "response")
+
+head(test_1)
+```
+
+## Test Sample Predictions
+
+No negative predictions with either model.
+
+```{r}
+#| echo: true
+describe(test_0) ## predictions from Linear fit
+describe(test_1) ## predictions from Poisson fit
+```
+
+## Validation Results: These Two Models
+
+```{r}
+#| echo: true
+mets <- metric_set(rsq, rmse, mae)
+
+test_res <- bind_cols(med_test, pre_m0 = test_0, pre_m1 = test_1)
+
+m0_sum <- mets(test_res, truth = visits, estimate = pre_m0) |>
+  mutate(model = "Linear")
+
+m1_sum <- mets(test_res, truth = visits, estimate = pre_m1) |>
+  mutate(model = "Poisson") 
+
+test_sum <- bind_rows(m0_sum, m1_sum) |>
+  pivot_wider(names_from = model, values_from = .estimate)
+
+test_sum |> select(-.estimator) |> gt() |> fmt_number(decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+# Selecting non-linear terms after Spearman $\rho^2$
+
+## Spearman $\rho^2$ plot
+
+```{r}
+#| echo: true
+plot(spearman2(visits ~ hospital + health + chronic + sex + school + 
+               insurance, data = med_train))
+```
+
+## Reiterating the Goal
+
+This is the order of the predictors (`chronic` highest) on the Spearman $\rho^2$ plot from the previous slide.
+
+Predictor | Description
+---------: | ----------------------------------------------
+`chronic`  | # of chronic conditions (all values 0-8)
+`hospital` | # of hospital stays (all values 0-8)
+`health`   | self-rated health (poor, average, excellent)
+`insurance` | subject (also) has private insurance? (yes/no)
+`school`   | years of education
+`sex`      | male or female
+
+## What might we do?
+
+- `chronic` is a count (all values 0-8), then a gap to...
+- `hospital` also quantitative, also a count (0-8)
+- `health` is a 3-category factor
+
+We might:
+
+- include a restricted cubic spline with 4-5 knots in `chronic`
+- include a rcs with fewer knots in `hospital`
+- include an interaction between `health` and `chronic` or perhaps `health` and `hospital`
+
+
+## Could we build an `ols()` fit?
+
+Splines sometimes crash with discrete predictors (like counts.)
+
+- For these data, it turns out that even a 3-knot spline in `hospital` fails (if we already have the four-knot spline in `chronic`), but the `ols()` function will let us add both interactions we're considering.
+
+```{r}
+#| echo: true
+d <- datadist(medicare); options(datadist = "d")
+
+mod_toobig <- ols(log(visits + 1) ~ 
+                 rcs(chronic, 4) + hospital * health + 
+                 chronic %ia% health +
+                 sex + school + insurance, data = med_train)
+```
+
+## Why is this model "too big"?
+
+```{r}
+#| echo: true
+mod_toobig
+```
+
+
+## Uh, oh.
+
+```{r}
+#| echo: true
+#| fig-height: 7
+
+plot(nomogram(mod_toobig, fun = exp, funlabel = "Visits + 1"))
+```
+
+## A more reasonable option?
+
+```{r}
+#| echo: true
+d <- datadist(medicare); options(datadist = "d")
+
+mod_new <- ols(log(visits + 1) ~ 
+                 rcs(chronic, 4) + hospital + health + 
+                 chronic %ia% health +
+                 sex + school + insurance, data = med_train)
+```
+
+## What does this `mod_new` show?
+
+```{r}
+#| echo: true
+mod_new
+```
+
+## How many df did we add here?
+
+```{r}
+#| echo: true
+anova(mod_new)
+```
+
+
+## What does this `ols()` fit look like?
+
+```{r}
+#| echo: true
+
+plot(summary(mod_new))
+```
+
+
+## What does this `ols()` fit look like?
+
+```{r}
+ggplot(Predict(mod_new))
+```
+
+## How's the nomogram?
+
+```{r}
+#| echo: true
+#| fig-height: 7
+
+plot(nomogram(mod_new, fun = exp, funlabel = "Visits + 1"))
+```
+
+# Can we fit a Poisson model with a function from `rms`?
+
+
+## The `Glm()` function in `rms`
+
+```{r}
+#| echo: true
+d <- datadist(medicare); options(datadist = "d")
+
+mod_1_Glm <- Glm(visits ~ hospital + health + chronic + sex + school + 
+               insurance, data = med_train, family = poisson())
+```
+
+and we could have used `rcs()` or polynomials or interactions if we wanted to do so.
+
+Complete and updated documentation for the `rms` package is found at <https://hbiostat.org/r/rms/>. 
+
+### Does a `Glm()` fit do everything we are used to?
+
+- Nope. No `validate()` or `calibrate()` methods exist.
+
+## What's in `mod_1_Glm`?
+
+```{r}
+#| echo: true
+mod_1_Glm
+```
+
+## What can we do: `mod_1_Glm`?
+
+```{r}
+#| echo: true
+plot(summary(mod_1_Glm))
+```
+
+## What can we do: `mod_1_Glm`?
+
+```{r}
+#| echo: true
+summary(mod_1_Glm)
+```
+
+## What can we do: `mod_1_Glm`?
+
+```{r}
+#| echo: true
+ggplot(Predict(mod_1_Glm))
+```
+
+---
+
+```{r}
+#| echo: true
+#| fig-height: 7
+plot(nomogram(mod_1_Glm, fun = exp, funlabel = "Visits",
+              fun.at = c(1, 2, 3, 4, 5, 10, 15, 20, 25, 30)))
+```
+
+# Checking Assumptions in Logistic Regression Models
+
+## Linear Regression vs. Logistic Regression
+
+Adapted from <https://www.statology.org/assumptions-of-logistic-regression/>
+
+In contrast to linear regression, logistic regression does not require:
+
+- A linear relationship between the predictors and the outcome.
+- The residuals of the model to be normally distributed.
+- The residuals to have constant variance (homoscedasticity/)
+
+## Assumptions of Logistic Regression
+
+Adapted from <https://www.statology.org/assumptions-of-logistic-regression/>
+
+1. The outcome variable is binary.
+2. The observations are independent from each other. (They shouldn't show a pattern in time or space.)
+3. There is no severe multicollinearity among the predictors (we use VIF > 5 as an indicator of trouble.)
+
+## Assumptions of Logistic Regression
+
+4. There are no extreme outliers (Cook's distance > .5 is what R flags as problematic^[Some argue for a standard of 0.25, or 1, or even 4/n, where n is your sample size.].)
+5. The sample size is sufficiently large (see next few slides.)
+6. There is a linear relationship between predictors and the logit of the outcome (see the final few slides.)
+
+## What does sufficiently large mean?
+
+1. Some people like a simple rule like 500 observations overall and 10 events (where an event is the smaller of your two outcome groups) per predictor parameter. See [Long's 1997 book (pdf)](https://jslsoc.sitehost.iu.edu/files_research/rm4cldv/sage1997/rm4cldv_toc.pdf).
+
+For *Project A*, we focus on keeping the number of predictors below (4 + (N-100)) / 100) where N is the size of the smaller of your two outcome groups. I wouldn't use that standard outside of Project A, though.
+
+## What does sufficiently large mean?
+
+2. Riley et al. in [Statistics in Medicine](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6519266/) develop an estimation scheme for the needed sample sizes, and motivate it with several examples. It's pretty complex but it's a good option.
+
+![](c16/figures/riley.png)
+
+## An "Old" Logistic Regression Example
+
+I'll use the `mov23a` data that I built back in Class 08. An RDS version of the data is available now on our 432-data page.
+
+```{r}
+#| echo: true
+
+mov23a <- read_rds("c16/data/mov23a.rds")
+
+mov23a
+```
+
+## Goal of this Example
+
+- We're trying to predict `bechdel` result (Pass or Fail) using three predictors: `age`, `mpa3` and `metascore`, as we did in slides 40-52 in the Class 08 Slides. 
+- When we did this back in Class 08, we got C = 0.620 and Nagelkerke $R^2$ = 0.062, with a likelihood ratio *p*-value of 0.0666
+
+Now, we want to see if our model passes these six assumption checks.
+
+## Fitting the Model
+
+We'll use both `glm()` and `lrm()` to fit the model.
+
+```{r}
+#| echo: true
+
+mod2_glm <- glm((bechdel == "Pass") ~ age + metascore + mpa3, 
+             data = mov23a, family = binomial(link = logit))
+
+ddd <- datadist(mov23a); options(datadist = "ddd")
+mod2_lrm <- lrm((bechdel == "Pass") ~ age + metascore + mpa3, 
+                data = mov23a, x = TRUE, y = TRUE)
+```
+
+We did all of this in Class 08. We have no missing data here.
+
+## Tidied Coefficients from our Model
+
+```{r}
+#| echo: true
+
+tidy(mod2_glm, exponentiate = TRUE, conf.int = TRUE, conf.level = 0.9) |>
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+
+## First Two Assumptions
+
+1. The outcome variable is binary.
+    - OK. `bechdel` is either Pass or Fail.
+
+```{r}
+#| echo: true
+
+mov23a |> count(bechdel)
+```
+
+2. The observations are independent from each other. (They shouldn't show a pattern in time or space.)
+    - The data are cross-sectional. No one film's results should affect another film's results, so we're OK.
+
+## Assumption Three
+
+3. There is no severe multicollinearity among the predictors (we use VIF > 5 as an indicator of trouble.)
+    - Let's look at the VIF results. Are we OK?
+    
+```{r}
+#| echo: true
+car::vif(mod2_glm)
+rms::vif(mod2_lrm)
+```
+
+## Assumption Four
+
+4. There are no extreme outliers (no Cook's distance > 0.5)
+
+```{r}
+#| echo: true
+#| fig-height: 3.5
+
+max(cooks.distance(mod2_glm))
+
+plot(mod2_glm, which = 4, id.n = 5)
+```
+
+## Assumption Five
+
+5. The sample size is sufficiently large. 
+
+- Recall that we have 107 Pass and 80 Fail subjects in `mov23a`.
+
+```{r}
+#| echo: true
+
+glance(mod2_glm) |> select(nobs)  ## could use mod2_lrm$stats["Obs"]
+```
+
+Does this seem like enough observations to fit a logistic regression model with 3 predictors (and 4 predictor coefficients) under consideration?
+
+## Assumption Six
+
+6. There is a linear relationship between predictors and the logit of the outcome. 
+
+A **Box-Tidwell test** is a common strategy to test this assumptions, but it doesn't work for logistic models [according to John Fox](https://stackoverflow.com/questions/56350546/how-to-use-the-box-tidwell-function-with-a-logistic-regression-in-r), inventor of the `car` package^[See Fox, J. (2016) Applied Regression Analysis and Generalized Linear Models, 3rd Ed., Sage.].
+
+He instead recommends what he calls Component + Residual plots and some people call Partial Residual plots, which can be used for both linear and generalized linear models.
+
+## Interpreting the Partial Residual Plots
+
+- The blue dashed line shows the expected residuals if the relationship between the predictor and response variable (here the log odds of our outcome) was linear. 
+- The solid pink curve shows a loess smooth of the actual residuals.
+
+If the two lines are meaningfully different, then this is evidence of a nonlinear relationship. One way to fix this issue is to build a transformation on the predictor variables, or consider incorporating some non-linear terms.
+
+## Running Partial Residual Plots 
+
+```{r}
+#| echo: true
+crPlots(mod2_glm) ## crPlots comes from the car package
+```
+
+## What Dr. Love does
+
+I have often used an alternative called CERES Plots (invented by Dennis Cook) when I fit logistic regression models.
+
+Again, the blue line shows the expected residuals if the relationship between the predictor and response variable (here the log odds of our outcome) was linear, while the pink line shows a loess smooth of the actual residuals.
+
+This looks only at the quantitative predictors.
+
+## An Alternative: CERES Plots
+
+```{r}
+#| echo: true
+ceresPlots(mod2_glm) ## ceresPlots also comes from car package
+```
+
+I see nothing especially problematic here.
+
+# In closing, have a nice break, and good luck with project A! 
