@@ -563,6 +563,10 @@ This looks only at the quantitative predictors.
 ceresPlots(mod2_glm) ## ceresPlots also comes from car package
 ```
 
-I see nothing especially problematic here.
+What do you think?
 
-# In closing, have a nice break, and good luck with project A! 
+## Thanks for coming!
+
+- In closing, have a nice break, and good luck with project A! 
+
+- Remember: office hours are closed March 9-15, and the project is now due Tuesday 2024-03-19 at noon.
