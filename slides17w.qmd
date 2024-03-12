@@ -1,0 +1,575 @@
+---
+title: "432 Class 17"
+author: Thomas E. Love, Ph.D.
+date: "2024-03-19"
+format: docx
+---
+
+
+## Today's Topic
+
+**Regression Models for Ordered Multi-Categorical Outcomes**
+
+- Applying to Graduate School: A First Example
+- Proportional Odds Logistic Regression Models
+  - Using `polr` and then Using `lrm`
+- Understanding and Interpreting the Model
+- Testing the Proportional Odds Assumption
+- Picturing the Model Fit
+      
+Chapter 27 of the Course Notes describes this material.
+
+## Setup
+
+```{r}
+#| echo: true
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor)
+library(broom)
+library(gt)
+library(GGally)    ## scatterplot matrix
+library(scales)    ## adjust label formatting within ggplot2
+library(MASS)      ## fitting polr models
+library(nnet)      ## fitting multinomial models
+library(conflicted)
+library(rms)
+library(tidyverse)
+
+conflicts_prefer(dplyr::filter, dplyr::select, dplyr::summarize)
+
+theme_set(theme_bw())
+```
+
+# Applying to Graduate School
+
+## The `gradschool` data and my **Source**
+
+The **gradschool** example is adapted from a site at UCLA^[<http://stats.idre.ucla.edu/r/dae/ordinal-logistic-regression/>].
+
+- There, they look at 400 students. 
+- I simulated a new data set containing 530 college juniors.
+
+Each subject is asked "Are you unlikely, somewhat likely, or very likely to apply to graduate school?" This is our outcome.
+
+- No reason to think that the "distances" between these categories are equal.
+
+## The `gradschool` variables
+
+Variable | Description
+---------: | ----------------------------------------------
+`student` | subject identifying code (A001 - A530)
+`apply`   | 3-level ordered outcome: "unlikely", "somewhat likely" and "very likely" to apply
+`pared`   | 1 = at least one parent has a graduate degree, else 0
+`public`  | 1 = undergraduate institution is public, else 0
+`gpa`     | student's undergraduate grade point average (max 4.00)
+
+## Ingesting the Data
+
+```{r}
+#| echo: true
+
+gradschool <- 
+  read_csv("c17/data/gradschool.csv", show_col_types = FALSE) |>
+  type.convert(as.is = FALSE) |> clean_names() |>
+  mutate(student = as.character(student))
+
+gradschool
+```
+
+## Our outcome as an *ordered* factor
+
+```{r}
+#| echo: true
+
+gradschool <- gradschool |>
+    mutate(apply = fct_relevel(apply, "unlikely", 
+                        "somewhat likely", "very likely"),
+           apply = factor(apply, ordered = TRUE))
+
+is.ordered(gradschool$apply)
+
+glimpse(gradschool)
+
+```
+
+## Describing the `gradschool` data
+
+```{r}
+#| echo: true
+
+describe(gradschool) ## from Hmisc
+```
+
+
+## Scatterplot Matrix for `gradschool`
+
+```{r}
+#| echo: true
+
+ggpairs(gradschool |> select(gpa, pared, public, apply)) ## outcome last
+```
+
+## Bar Chart of `apply` classifications with %s
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(gradschool, aes(x = apply, fill = apply)) + 
+    geom_bar(aes(y = 
+        (after_stat(count)/sum(after_stat(count))))) +
+    geom_text(aes(y = 
+        (after_stat(count))/sum(after_stat(count)), 
+          label = scales::percent((after_stat(count)) / 
+                            sum(after_stat(count)))),
+              stat = "count", vjust = 1.5, 
+              color = "white", size = 5) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_fill_brewer(palette = "Set1") +
+    guides(fill = "none") + 
+    labs(y = "Percentage")
+```
+
+
+## Data (besides `gpa`) as Cross-Tabulation
+
+```{r}
+#| echo: true
+ftable(xtabs(~ public + apply + pared, data = gradschool))
+```
+
+
+## `apply` percentages by `public`, `pared`
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(gradschool, aes(x = apply, fill = apply)) + 
+    geom_bar() +
+    scale_fill_brewer(palette = "Set1") +
+    guides(fill = "none") + 
+    facet_grid(pared ~ public, labeller = "label_both")
+```
+
+## Breakdown of `gpa` by `apply`
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(gradschool, aes(x = apply, y = gpa, fill = apply)) + 
+    geom_violin(trim = TRUE) +
+    geom_boxplot(col = "white", width = 0.2) +
+    scale_fill_brewer(palette = "Set1") +
+    guides(fill = "none")
+```
+
+## `gpa` by three other variables
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(gradschool, aes(x = apply, y = gpa)) +
+    geom_boxplot(aes(fill = apply), size = .75) +
+    geom_jitter(alpha = .25) +
+    facet_grid(pared ~ public, margins = TRUE, 
+               labeller = "label_both") +
+    scale_fill_brewer(palette = "Set1") +
+    guides(fill = "none") +
+    theme(axis.text.x = 
+            element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+# Proportional Odds Logit Model via `polr`
+
+## Fitting the POLR model
+
+We use the `polr` function from the `MASS` package:
+
+```{r}
+#| echo: true
+
+mod_p1 <- polr(apply ~ pared + public + gpa, 
+          data = gradschool, Hess=TRUE)
+```
+
+The `polr` name comes from proportional odds logistic regression, highlighting a key assumption of this model. 
+
+- We specify `Hess=TRUE` to have the model return the observed information matrix from optimization (called the Hessian) which is used to get appropriate standard errors.
+
+## `mod_p1` Predicted Probabilities
+
+The model's predicted probabilities are usually the best way to understand what it does.
+
+For example, we vary `gpa` for each level of `pared` and `public` and calculate the model's estimated probability of being in each category of `apply`. 
+
+First, create a new tibble of values to use for prediction.
+
+```{r}
+#| echo: true
+
+newdat <- tibble(
+  pared = rep(0:1, 200),
+  public = rep(0:1, each = 200),
+  gpa = rep(seq(from = 1.9, to = 4, length.out = 100), 4))
+```
+
+## `mod_p1` Predicted Probabilities
+
+Now, make predictions using model `mod_p1`:
+
+```{r}
+#| echo: true
+
+newdat_p1 <- cbind(newdat, 
+                 predict(mod_p1, newdat, type = "probs"))
+head(newdat_p1) |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Reshape data
+
+Now, we reshape the data with `pivot_longer`:
+
+```{r}
+#| echo: true
+
+newdat_long <- 
+  pivot_longer(newdat_p1, 
+               cols = c("unlikely":"very likely"),
+               names_to = "level",
+               values_to = "probability") |>
+  mutate(level = fct_relevel(level, "unlikely",
+                             "somewhat likely"))
+```
+
+Result on next slide...
+
+## The `newdat_long` data
+
+```{r}
+#| echo: true
+newdat_long
+```
+
+
+## `mod_p1` Predictions
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(newdat_long, aes(x = gpa, y = probability, 
+                        color = level)) +
+    geom_line(size = 1.5) + 
+    scale_color_brewer(palette = "Set1") +
+    facet_grid(pared ~ public, labeller="label_both")
+```
+
+## Predicted vs. Observed Classifications
+
+Predictions in the rows, Observed in the columns
+
+```{r}
+#| echo: true
+
+addmargins(table(predict(mod_p1), gradschool$apply))
+```
+
+We only predict one subject to be in the "very likely" group by modal prediction.
+
+## Proportional Odds Logistic Model
+
+Our outcome `apply` has three levels, so `mod_p1` includes two equations:
+
+- one estimating the log odds that `apply` will be less than or equal to 1 (`apply` = "unlikely") 
+- one estimating the log odds that `apply` $\leq$ 2 (`apply` = "unlikely" or "somewhat likely")
+
+That's all we need, since Pr(`apply` $\leq$ 3) = 1, because "very likely" is the highest `apply` category.
+
+## Parameters of the POLR Model
+
+- The parameters to be fit include two intercepts:
+    - $\zeta_1$ will be the `unlikely|somewhat likely` parameter
+    - $\zeta_2$ will be the `somewhat likely|very likely` parameter (*read these as zeta-one, and zeta-two*)
+
+We'll have a total of five free parameters when we add in the slopes ($\beta$) for `pared`, `public` and `gpa`.
+
+- The two logistic equations that will be fit differ only in their intercepts.
+
+## `summary(mod_p1)`
+
+```{r}
+#| echo: true
+summary(mod_p1)
+```
+
+## Understanding the Model
+
+$$ 
+logit[Pr(apply \leq 1)] = \zeta_1 - \beta_1 pared - \beta_2 public - \beta_3 gpa
+$$
+
+$$ 
+logit[Pr(apply \leq 2)] = \zeta_2 - \beta_1 pared - \beta_2 public - \beta_3 gpa
+$$
+
+in general. In our setting, we have ...
+
+## The `mod_p1` equations...
+
+$$ 
+logit[Pr(apply \leq unlikely)] = 
+$$
+
+$$
+3.87 - 1.15 pared - (-0.49) public - 1.14 gpa
+$$
+
+and
+
+$$
+logit[Pr(apply \leq somewhat)] = 
+$$
+
+$$
+5.94 - 1.15 pared - (-0.49) public - 1.14 gpa
+$$
+
+## `confint(mod_p1)`
+
+Confidence intervals for the slope coefficients on the log odds scale can be estimated in the usual way.
+
+```{r}
+#| echo: true
+confint(mod_p1)
+```
+
+These CIs describe results in units of ordered log odds.
+
+- For example, for a one unit increase in `gpa`, we expect a 1.14 increase in the expected value of `apply` (95% CI 0.78, 1.51) in the log odds scale, holding `pared` and `public` constant.
+- This would be more straightforward if we exponentiated.
+
+## Exponentiating the Coefficients
+
+```{r}
+#| echo: true
+
+exp(coef(mod_p1))
+exp(confint(mod_p1))
+```
+
+## Interpreting the Coefficients
+
+Variable | Estimate | 95% CI
+--------: | -------: | --------------:
+`gpa` | 3.13 | (2.19, 4.53)
+`public` | 0.61 | (0.39, 0.93)
+`pared` | 3.17 | (2.07, 4.87)
+
+- When a student's `gpa` increases by 1 unit, the odds of moving from "unlikely" applying to "somewhat likely" or "very likely" applying are multiplied by 3.13 (95% CI 2.19, 4.52), all else held constant. 
+
+## Interpreting the Coefficients
+
+Variable | Estimate | 95% CI
+--------: | -------: | --------------:
+`gpa` | 3.13 | (2.19, 4.53)
+`public` | 0.61 | (0.39, 0.93)
+`pared` | 3.17 | (2.07, 4.87)
+
+- For `public`, the odds of moving from a lower to higher `apply` status are multiplied by 0.61 (95% CI 0.39, 0.93) as we move from private to public, all else held constant.
+- How about `pared`?
+
+## Tidying `mod_p1`
+
+We'll exponentiate here so that the estimates and confidence intervals describe the odds associated with changes in these coefficients.
+
+```{r}
+#| echo: true
+tidy(mod_p1, exponentiate = TRUE, conf.int = TRUE) |> 
+  gt() |> 
+  fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+
+## Comparison to a Null Model
+
+```{r}
+#| echo: true
+
+mod_p0 <- polr(apply ~ 1, data = gradschool)
+
+anova(mod_p1, mod_p0)
+```
+
+## AIC and BIC are available, too
+
+```{r}
+#| echo: true
+# model including covariates
+glance(mod_p1) |> gt() |> 
+  fmt_number(columns = logLik:deviance, decimals = 3) |>
+  tab_options(table.font.size = 20) 
+
+# null model; no covariates
+glance(mod_p0) |> gt() |> 
+  fmt_number(columns = logLik:deviance, decimals = 3) |>
+  tab_options(table.font.size = 20) 
+```
+
+
+## Tidying `mod_p0`
+
+```{r}
+#| echo: true
+tidy(mod_p0, exponentiate = TRUE, conf.int = TRUE) |> 
+  gt() |> 
+  fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Proportional Odds Assumption (1/2)
+
+One way to assess the proportional odds assumption is to compare the fit of the proportional odds logistic regression to a model that does not make that assumption. 
+
+- A natural candidate is a **multinomial logit** model, which is typically used to model unordered multi-categorical outcomes, and fits a slope to each level of the `apply` outcome in this case, as opposed to the proportional odds logit, which fits only one slope across all levels.
+
+## Proportional Odds Assumption (2/2)
+
+Since the proportional odds logistic regression model is nested in the multinomial logit, we can perform a likelihood ratio test. 
+
+- To do this, we first fit the multinomial logit model, with the `multinom` function from the `nnet` package.
+
+### Fitting the multinomial model
+
+```{r}
+#| echo: true
+m1_multi <- multinom(apply ~ pared + public + gpa, 
+                      data = gradschool)
+```
+
+## The multinomial model
+
+```{r}
+#| echo: true
+m1_multi
+```
+
+## Tidying `m1_multi`
+
+```{r}
+#| echo: true
+
+tidy(m1_multi, conf.int = TRUE) |> 
+  gt() |> 
+  fmt_number(columns = estimate:conf.high, decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+
+## Comparing the Models
+
+The multinomial logit fits two intercepts and six slopes, for a total of 8 estimated parameters. 
+
+The proportional odds logit, as we've seen, fits two intercepts and three slopes, for a total of 5. The difference is 3, and we use that number in the sequence below to build our test of the proportional odds assumption.
+
+## Testing the Proportional Odds Assumption
+
+```{r}
+#| echo: true
+LL_1 <- logLik(mod_p1)
+LL_1m <- logLik(m1_multi)
+(G <- -2 * (LL_1[1] - LL_1m[1]))
+pchisq(G, 3, lower.tail = FALSE)
+```
+
+The *p* value is 0.018, so it indicates that the proportional odds model fits less well than the more complex multinomial logit. 
+
+## Comparing `mod_p1` and `m1_multi`
+
+```{r}
+#| echo: true
+glance(mod_p1) |> 
+  gt() |> tab_options(table.font.size = 20)
+glance(m1_multi) |> 
+  gt() |> tab_options(table.font.size = 20)
+
+BIC(mod_p1); BIC(m1_multi)
+```
+
+## What to do in light of these results...
+
+- A *p* value isn't usually the best way to assess the proportional odds assumption, but it does provide some evidence of model adequacy.
+- The stronger BIC (and only slightly worse AIC) for our POLR model relative to the multinomial gives conflicting advice.
+    - One alternative: fit the multinomial model instead. 
+    - Another: fit a check of residuals (see Harrell's RMS text.)
+    - Another: fit a different model for ordinal regression. For example, `orm` in the `rms` package. (Next time.)
+
+# Using `lrm` for Proportional Odds Logistic Regression
+
+## Using `lrm` to work through this model
+
+```{r}
+#| echo: true
+d <- datadist(gradschool); options(datadist = "d")
+
+mod <- lrm(apply ~ pared + public + gpa, data = gradschool, x = T, y = T)
+
+mod
+```
+
+## Validating our `mod`
+
+```{r}
+#| echo: true
+set.seed(432); validate(mod)
+```
+
+
+## Effects Plot
+
+```{r}
+#| echo: true
+plot(summary(mod))
+```
+
+## Effects Summary
+
+```{r}
+#| echo: true
+summary(mod)
+```
+
+### Coefficients in the `mod` equation
+
+```{r}
+#| echo: true
+
+mod$coef
+```
+
+## Nomogram of `mod` 
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+fun.1 <- function(x) 1 - plogis(x)
+fun.3 <- function(x) 
+    plogis(x - mod$coef[1] + mod$coef[2])
+
+plot(nomogram(mod,
+    fun=list('Prob Y = 1 (unlikely)' = fun.1, 
+             'Prob Y = 3 (very likely)' = fun.3)))
+```
+
+## Next Time (Class 18)
+
+- A second example using asbestos data.
+- Building and evaluating some POLR models
+- Building and evaluating an ordinal logistic regression model (`ols()` from the `rms` package)
+
