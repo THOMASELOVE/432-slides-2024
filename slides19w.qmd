@@ -1,0 +1,724 @@
+---
+title: "432 Class 19"
+author: Thomas E. Love, Ph.D.
+date: "2024-03-26"
+format: docx
+---
+
+
+## Today's Topic
+
+**Multinomial Logistic Regression: An Introduction**
+
+- Two Examples about Alligators
+- Fitting Multinomial Logistic Regression Models
+
+Chapter 28 of the Course Notes describes an additional example discussing this material.
+
+## Setup
+
+```{r}
+#| echo: true
+#| warning: false
+#| message: false
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 60)
+
+library(janitor)
+library(broom)
+library(mosaic)
+library(gt)
+library(naniar)
+library(nnet)
+library(rms)
+library(conflicted)
+library(tidyverse)
+
+conflicts_prefer(base::mean, dplyr::filter, dplyr::select, dplyr::summarize)
+
+theme_set(theme_bw())
+```
+
+## Regression on Multi-categorical Outcomes
+
+Suppose we have a nominal, multi-categorical outcome of interest. Multinomial (also called multicategory or polychotomous) logistic regression models describe the odds of response in one category instead of another. 
+
+- Such models pair each outcome category with a baseline category, the choice of which is arbitrary. 
+- The model consists of J-1 logit equations (for an outcome with J categories) with separate parameters for each.
+
+# A small example: `gator1` on Alligator Food Choices
+
+## Today's Data
+
+Today's data relates to alligator food choices. We'll actually work with two different data sets.
+
+In each case, we'll read in the data, and set some key variables to be factors and, if needed, actively select the baseline category.
+
+## `gator1`: Alligator Food Choice
+
+The `gator1` data are from a study by the Florida Game and Fresh Water Fish Commission of factors influencing the primary food choice of alligators^[Source: Agresti's 1996 first edition of An Introduction to Categorical Data Analysis, Table 8.1. These were provided by Delany MF and Moore CT.]. 
+
+We'll be trying to predict primary food `choice` using the alligator's `length`.
+
+## `gator1` has data on 59 alligators
+
+- `length` (in meters) 
+- `choice` = primary food type, in volume, found in the alligator's stomach, specifically...
+    + Fish,
+    + Invertebrates (mostly apple snails, aquatic insects and crayfish, and I'll abbreviate this category as `Inverts` in what follows) 
+    + Other (which includes reptiles, amphibians, mammals, plant material and stones or other debris.) 
+
+## Ingesting the `gator1` data
+
+```{r}
+#| echo: true
+gator1 <- read_csv("c19/data/gator1.csv", 
+                   show_col_types = FALSE) |>
+    mutate(choice = fct_relevel(factor(choice), "Other"),
+           choice = fct_recode(choice, 
+                               "Inverts" = "Invertebrates"))
+
+gator1
+```
+
+## Summarizing `length` by `choice`
+
+Note that I've set up `choice` so that "Other" is the baseline (first) category, while ingesting the data.
+
+```{r}
+#| echo: true
+favstats(length ~ choice, data = gator1) |>
+  gt() |> fmt_number(min:sd, decimals = 2) |>
+  tab_options(table.font.size = 20)
+```
+
+There is no missing data in `gator1`.
+
+```{r}
+#| echo: true
+n_miss(gator1)
+```
+
+## Length and Primary Food Choice
+
+```{r}
+#| echo: true
+
+ggplot(gator1, aes(x = choice, y = length, fill = choice)) +
+  geom_violin() +
+  geom_boxplot(fill = "white", col = "black", width = 0.1) +
+  scale_fill_brewer(palette = "Set1") + guides(fill = "none")
+```
+
+# Fitting a Multinomial Logistic Regression
+
+## Multinomial Logistic Regression Fit
+
+- "Other" is the first (reference) level for `choice`
+
+```{r}
+#| echo: true
+gator1 |> tabyl(choice)
+```
+
+Let's try using `multinom()` from the `nnet` package
+
+```{r}
+#| echo: true
+
+try1 <- multinom(choice ~ length, data=gator1)
+```
+
+## Looking over the first try
+
+```{r try1}
+#| echo: true
+
+try1
+```
+
+Our R output suggests the following models:
+
+- log odds of Fish rather than Other = 1.62 - 0.110 Length
+- log odds of Inverts. rather than Other = 5.70 - 2.465 Length
+
+## Estimating Response Probabilities
+
+We can express the multinomial logistic regression model directly in terms of outcome probabilities:
+
+$$
+\pi_j = \frac{exp(\beta_{0j} + \beta_{1j} x)}{\Sigma_j exp(\beta_{0j} + \beta_{1j} x)}
+$$
+
+Our models contrast "Fish" and "Invertebrates" to "Other" as the reference category. 
+
+## Estimating Response Probabilities
+
+$$
+\pi_j = \frac{exp(\beta_{0j} + \beta_{1j} x)}{\Sigma_j exp(\beta_{0j} + \beta_{1j} x)}
+$$
+
+
+In our `try1`, we have:
+
+- log odds of Fish rather than Other = 1.62 - 0.110 Length
+- log odds of Inverts rather than Other = 5.70 - 2.465 Length
+- For the reference category we use $\beta_{0j} = 0$ and $\beta_{1j} = 0$ so that $exp(\beta_{0j} + \beta_{1j} x) = 1$ for that category (here, Other.)
+
+## `try1` Response Probabilities {.smaller}
+
+Our estimates (which will sum to 1) are:  
+
+$$
+Pr(Fish | Length = L) = 
+\frac{exp(1.62 - 0.110 L)}{1 + exp(1.62 - 0.110 L) + exp(5.70 - 2.465 L)}
+$$
+
+$$
+Pr(Invert. | Length = L) = 
+\frac{exp(5.70 - 2.465 L)}{1 + exp(1.62 - 0.110 L) + exp(5.70 - 2.465 L)}
+$$
+
+$$
+Pr(Other | Length = L) = 
+\frac{1}{1 + exp(1.62 - 0.110 L) + exp(5.70 - 2.465 L)}
+$$
+
+## Making a Prediction with `try1` {.smaller}
+
+For an alligator of 3.9 meters, for instance, we have:
+
+$$
+denominator = {1 + exp(1.62 - 0.110 (3.9)) + exp(5.70 - 2.465 (3.9))} = 4.31 \\
+Pr(Fish) = \frac{exp(1.62 - 0.110 (3.9))}{4.31}  = \frac{3.29}{4.31} = 0.7633\\
+Pr(Invert.) = \frac{exp(5.70 - 2.465 (3.9)}{4.31} = \frac{0.02}{4.31} = 0.0046\\
+Pr(Other) = \frac{1}{4.31} = 0.2320
+$$
+
+## Predicted Probabilities from `try1`
+
+```{r}
+#| echo: true
+
+try1_fits <- 
+    predict(try1, newdata = gator1, type = "probs")
+
+gator1_try1 <- cbind(gator1, try1_fits)
+
+head(gator1_try1); tail(gator1_try1)
+```
+
+## Tabulating Response Probabilities
+
+```{r}
+#| echo: true
+
+gator1_try1 |> group_by(choice) |>
+    summarise(mean(Other), mean(Fish), mean(Inverts))
+```
+
+## Pivot the Wide data to make it longer 
+
+We need to have this data organized differently in order to build the plot I want to build.
+
+```{r}
+#| echo: true
+
+gator1_try1long <- 
+  pivot_longer(gator1_try1, 
+               cols = c("Other", "Fish", "Inverts"),
+               names_to = "preference",
+               values_to = "probability") |>
+  mutate(preference = factor(preference))
+```
+
+## What does this pivoting accomplish?
+
+```{r}
+#| echo: true
+
+gator1_try1long
+```
+
+## `try1` Response Probabilities
+
+```{r}
+#| echo: true
+ggplot(gator1_try1long, aes(x = length, y = probability, 
+                            col = preference)) +
+    geom_line(size = 2) + scale_fill_brewer(palette = "Set1")
+```
+
+## `try1` model summary
+
+```{r}
+#| echo: true
+summary(try1)
+
+glance(try1) |> gt() |> tab_options(table.font.size = 20)
+```
+
+## Compare to intercept-only model
+
+Compare `try1` to the null model with only an intercept (`try0`)
+
+```{r}
+#| echo: true
+
+try0 <- multinom(choice ~ 1, data=gator1)
+
+AIC(try0, try1)
+BIC(try0, try1)
+```
+
+Does the inclusion of `length` produce a meaningfully better fit to the data than simply fitting an intercept?
+
+
+## ANOVA for `try0` vs. `try1`
+
+- If you'd prefer a hypothesis testing approach, use `anova`...
+
+```{r}
+#| echo: true
+
+anova(try0, try1)
+```
+
+Does the inclusion of `length` produce a meaningfully better fit to the data than simply fitting an intercept?
+
+## Wald Z tests for individual predictors
+
+By default, `tidy` exponentiates multinomial coefficients...
+
+```{r}
+#| echo: true
+
+tidy(try1) |> 
+  gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+# Working with a larger example: `gator2` 
+
+## `gator2` describes 219 alligators
+
+The `gator2.csv` data^[Source: <https://online.stat.psu.edu/stat504/lesson/8>] considers the stomach contents of 219 alligators, aggregated into 5 categories by primary food choice:
+
+- fish
+- invertebrates
+- reptiles
+- birds
+- other (including amphibians, plants, household pets, stones, and debris)
+
+## `gator2` has additional predictors
+
+The 219 alligators are also categorized by:
+
+- sex (m or f), and 
+- by length (< 2.3 and $\geq$ 2.3 meters) and 
+- by which of four lakes they were captured in (Hancock, Oklawaha, Trafford or George.) 
+
+We'll use as our baseline: fish as a `choice`, sex as `m`, length `>= 2.3` and lake `george`. 
+
+See the Table on next slide.
+
+---
+
+![](c19/figures/gator_table.png)
+
+## Model Setup
+
+$$
+\pi_1 = Pr(Fish), \pi_2 = Pr(Invert.), \pi_3 = Pr(Reptiles),
+$$
+$$
+\pi_4 = Pr(Birds), \pi_5 = Pr(Other)
+$$
+
+We'll use Fish as the baseline, so our regression equations take the form
+
+$$
+log(\frac{\pi_j}{\pi_1}) = \beta_0 + \beta_1[Lake=Hancock] + \beta_2[Lake=Oklawaha] +
+$$
+$$
+\beta_3[Lake=Trafford] + \beta_4[Length \geq 2.3] + \beta_5[Sex = Female]
+$$
+
+for $j = 2, 3, 4, 5$. 
+
+## How many coefficients do we estimate?
+
+- We have six coefficients to estimate in each of four logit equations (one each for $j = 2, 3, 4, 5$) so there are 24 parameters to estimate.
+
+## Ingesting the `gator2` data
+
+```{r}
+#| echo: true
+
+gator2 <- read_csv("c19/data/gator2.csv", show_col_types = FALSE) |>
+    mutate(across(where(is_character), as_factor),
+           id = as.character(id))
+```
+
+We re-level the factors to put our reference categories first.
+
+```{r}
+#| echo: true
+gator2 <- gator2 |>
+    mutate(food = fct_relevel(food, "fish", "invert", 
+                            "rep", "bird", "other"),
+           size = fct_relevel(size, ">=2.3"),
+           gender = fct_relevel(gender, "m"),
+           lake = fct_relevel(lake, "george"))
+
+summary(gator2 |> select(-id))
+```
+
+## The Models We Will Fit
+
+We'll fit (using `multinom()` from `nnet`)
+
+- A *saturated* model, including all three predictors and all two-way interactions and the three-way interaction
+- A *null* model, with the intercept alone
+- Simple logistic regression models for each of the three predictors as a main effect alone
+- The model including both L(ake) and S(ize) but nothing else
+- The model including all three predictors as main effects, but no interactions
+
+## The Models We Will Fit (code only)
+
+```{r}
+#| echo: true
+#| eval: false
+
+options(contrasts=c("contr.treatment", "contr.poly"))
+fit_SAT <- multinom(food ~ lake*size*gender, data=gator2) # saturated
+fit_1 <-multinom(food~1,data=gator2)                # null
+fit_G <-multinom(food~gender,data=gator2)           # G
+fit_L <-multinom(food~lake,data=gator2)             # L
+fit_S <-multinom(food~size,data=gator2)             # S
+fit_LS <-multinom(food~lake+size,data=gator2)        # L+S
+fit_GLS <-multinom(food~gender+lake+size,data=gator2) # G+L+S
+```
+
+## What You'll See When Fitting the models
+
+```{r}
+#| echo: true
+
+options(contrasts=c("contr.treatment", "contr.poly"))
+fit_SAT <- multinom(food ~ lake*size*gender, data=gator2) 
+```
+
+and we'll see something similar for each of the other models...
+
+
+```{r}
+#| message: false
+
+fit_1<-multinom(food~1,data=gator2)                # null
+fit_G<-multinom(food~gender,data=gator2)           # G
+fit_L<-multinom(food~lake,data=gator2)             # L
+fit_S<-multinom(food~size,data=gator2)             # S
+fit_LS<-multinom(food~lake+size,data=gator2)        # L+S
+fit_GLS<-multinom(food~gender+lake+size,data=gator2) # G+L+S
+```
+
+## The Intercept only Model `fit_1`
+
+```{r}
+#| echo: true
+
+summary(fit_1)
+```
+
+## Tidying this summary
+
+```{r}
+#| echo: true
+
+tidy(fit_1, exponentiate = FALSE) |> 
+  gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+
+glance(fit_1) |> gt() |> 
+  tab_options(table.font.size = 20)
+```
+
+## Size only model
+
+```{r}
+#| echo: true
+
+tidy(fit_S, exponentiate = FALSE) |> gt() |> 
+  fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Size only model
+
+```{r}
+#| echo: true
+glance(fit_S) |> gt() |> tab_options(table.font.size = 20)
+```
+
+## Gender only model
+
+```{r}
+#| echo: true
+
+tidy(fit_G, exponentiate = FALSE) |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Gender only model
+
+```{r}
+#| echo: true
+glance(fit_G) |> gt() |> tab_options(table.font.size = 20)
+```
+
+## Lake only model (part 1 of 2)
+
+```{r}
+#| echo: true
+
+tidy(fit_L, exponentiate = FALSE) |> slice(1:10) |> 
+  gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Lake only model (part 2 of 2)
+
+```{r}
+#| echo: true
+
+tidy(fit_L, exponentiate = FALSE) |> slice(11:16) |> 
+  gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+
+glance(fit_L) |> gt() |> tab_options(table.font.size = 20)
+```
+
+## The Saturated Model
+
+```{r}
+#| echo: true
+
+fit_SAT
+```
+
+## Building a Model Comparison Table
+
+For a model `fitX`, we find the:
+
+- Effective degrees of freedom with `fitX$edf`
+- Deviance with `deviance(fitX)` or by listing or summarizing the model
+- AIC and BIC with `AIC(fitX)` and `BIC(fitX)`
+
+```{r}
+#| echo: true
+
+fit_SAT$edf; deviance(fit_SAT); AIC(fit_SAT); BIC(fit_SAT)
+```
+
+Note that for these models, AIC = Deviance + 2(`edf`)
+
+## Results across all models we've fit
+
+`fit` | Model | `edf` | Deviance | AIC | BIC
+-----:| :--------------: | ---------: | ----------: | ----: | ---:
+`1` | Intercept only | `r fit_1$edf` | `r round(deviance(fit_1),1)` | `r round(AIC(fit_1),1)` | `r round(BIC(fit_1),1)`
+`G` | Gender only | `r fit_G$edf` | `r round(deviance(fit_G),1)` | `r round(AIC(fit_G),1)` | `r round(BIC(fit_G),1)`
+`S` | Size only | `r fit_S$edf` | `r round(deviance(fit_S),1)` | `r round(AIC(fit_S),1)` | `r round(BIC(fit_S),1)`
+`L` | Lake only | `r fit_L$edf` | `r round(deviance(fit_L),1)` | `r round(AIC(fit_L),1)` | `r round(BIC(fit_L),1)`
+`LS` | Lake and Size | `r fit_LS$edf` | `r round(deviance(fit_LS),1)` | `r round(AIC(fit_LS),1)` | `r round(BIC(fit_LS),1)`
+`GLS` | G, L, S main effects | `r fit_GLS$edf` | `r round(deviance(fit_GLS),1)` | `r round(AIC(fit_GLS),1)` | `r round(BIC(fit_GLS),1)`
+`SAT` | `G*S*L` (saturated) | `r fit_SAT$edf` | `r round(deviance(fit_SAT),1)` | `r round(AIC(fit_SAT),1)` | `r round(AIC(fit_SAT),1)`
+
+Which model looks like it fits the data best?
+
+## Drop in deviance tests (example 1)
+
+Compare Model `G` to intercept-only
+
+```{r}
+#| echo: true
+
+anova(fit_G, fit_1)
+```
+
+## Drop in deviance tests (example 2)
+
+Compare Model `SAT` to Model `GLS`
+
+```{r}
+#| echo: true
+
+anova(fit_SAT, fit_GLS)
+```
+
+## Results of testing
+
+`fit` | Model | `edf` | Deviance | versus | *p*
+-----:| :--------------: | ---------: | ---: | ----: | ---:
+`1` | Intercept only | `r fit_1$edf` | `r round(deviance(fit_1),1)` | -- | --
+`G` | Gender only | `r fit_G$edf` | `r round(deviance(fit_G),1)` | 1 | `r round(anova(fit_G, fit_1)$"Pr(Chi)"[2],3)`
+`S` | Size only | `r fit_S$edf` | `r round(deviance(fit_S),1)` | 1 | `r round(anova(fit_S, fit_1)$"Pr(Chi)"[2],3)`
+`L` | Lake only | `r fit_L$edf` | `r round(deviance(fit_L),1)` | 1 | `r round(anova(fit_L, fit_1)$"Pr(Chi)"[2],3)`
+`LS` | Lake and Size | `r fit_LS$edf` | `r round(deviance(fit_LS),1)` | L | `r round(anova(fit_LS, fit_L)$"Pr(Chi)"[2],3)`
+`GLS` | G, L, S main effects | `r fit_GLS$edf` | `r round(deviance(fit_GLS),1)` | LS | `r round(anova(fit_GLS, fit_LS)$"Pr(Chi)"[2],3)`
+`SAT` | `G*S*L` (saturated) | `r fit_SAT$edf` | `r round(deviance(fit_SAT),1)` | GLS | `r round(anova(fit_SAT, fit_GLS)$"Pr(Chi)"[2],3)`
+
+## Which model fits the data best?
+
+The model with the lowest AIC is the model which collapses on Gender, and uses only Lake and Size as predictors for Food Choice. (`fit_LS`). 
+
+- This (`fit_LS`) is also the model which has the most evidence in its favor from the drop in deviance testing.
+
+The model with the lowest BIC is the model which collapses on both Gender and Lake, and uses only Size as a predictor for Food Choice. (`fit_S`)
+
+## `fit_LS` coefficients
+
+```{r}
+#| echo: true
+coef(fit_LS)
+```
+
+
+## The start of the `L+S` Model
+
+```{r}
+#| echo: true
+
+tidy(fit_LS, exponentiate = FALSE) |> 
+  slice(1:5) |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+- log odds of invertebrates rather than fish are:
+
+```
+-1.549 - 1.658 (Hancock) + 0.937 (Oklahawa) + 1.122 (Trafford) + 1.458 (size < 2.3)
+```
+
+For baseline category, log odds of fish = 0, so exp(log odds) = 1.
+
+## Response Probabilities in `fit_LS` {.smaller}
+
+To keep things relatively simple, we'll look at the class of Large size alligators (so the small size indicator is 0), in Lake George, (so the three Lake indicators are all 0, also).
+
+- The estimated probability of Fish in Large size alligators in Lake George according to our model is:
+
+$$
+\hat{\pi}(Fish) = \frac{1}{1 + exp(-1.549) + exp(-3.315) + exp(-2.093) + exp(-1.904)} 
+$$
+
+$$
+= \frac{1}{1.521} = 0.657
+$$
+
+## Response Probabilities in `fit_LS` {.smaller}
+
+- The estimated probability of Invertebrates in Large size alligators in Lake George according to our model is:
+
+$$
+\hat{\pi}(Inv.) = \frac{exp(-1.549)}{1 + exp(-1.549) + exp(-3.315) + exp(-2.093) + exp(-1.904)} 
+$$
+
+$$
+= \frac{0.212}{1.521} = 0.139
+$$
+
+The estimated probabilities for the other categories in Large size Lake George alligators are:
+
+- 0.024 for Reptiles, 0.081 for Birds, and 0.098 for Other
+- And the five probabilities will sum to 1, at least within rounding error.
+
+## Model Estimates vs. Observed Counts
+
+For large size alligators in Lake George, we have...
+
+Food Type | Fish | Inverts | Reptiles | Birds | Other
+:--------:| ---: | ---: | ---: | ---: | ---:
+Observed \# | 17 | 1 | 0 | 1 | 3
+Observed Prob. | 0.77 | 0.045 | 0 | 0.045 | 0.14
+`L+S` Model Prob. | 0.66 | 0.14 | 0.02 | 0.08 | 0.10
+
+We could perform similar calculations for all other combinations of size and lake, but I'll leave that to the dedicated.
+
+## Predicted `fit_LS` Probabilities
+
+```{r}
+#| echo: true
+
+fitLS_fits <- 
+    predict(fit_LS, newdata = gator2, type = "probs")
+
+gator2_fit_LS <- cbind(gator2, fitLS_fits)
+
+tail(gator2_fit_LS, 3)
+```
+
+## Tabulating Response Probabilities
+
+```{r}
+#| echo: true
+
+gator2_fit_LS |> group_by(food) |>
+    summarize(mean(fish), mean(invert), mean(rep), 
+              mean(bird), mean(other)) |>
+  gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Turn Wide Data into Long 
+
+```{r}
+#| echo: true
+
+gator2_fitLSlong <-
+  pivot_longer(gator2_fit_LS, 
+               cols = fish:other, 
+               names_to = "response",
+               values_to = "prob")
+
+head(gator2_fitLSlong)
+```
+
+
+## `fit_LS` Response Probabilities
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(gator2_fitLSlong, aes(x = lake, y = prob, 
+                            col = response,
+                            shape = response)) +
+  geom_point(size = 7) +
+  scale_color_brewer(palette = "Set1") +
+  facet_grid(size ~ gender, labeller = "label_both") +
+  scale_shape_manual(values = c("B", "F", "I", "O", "R"))
+```
+
+
+## Other Sources {.smaller}
+
+In addition to the example found in our Course Notes (Chapter 28)...
+
+- A good source of information on fitting these models is <https://stats.idre.ucla.edu/r/dae/multinomial-logistic-regression/>
+
+- Using the tidymodels structure to fit these models is another good idea. Julia Silge has a very nice example at <https://juliasilge.com/blog/multinomial-volcano-eruptions/>
+
+- More mathematically oriented sources include the following texts: 
+    + Hosmer DW Lemeshow S Sturdivant RX (2013) Applied Logistic Regression, 3rd Edition, Wiley
+    + Agresti A (2007) An Introduction to Categorical Data Analysis, 2nd Edition, Wiley. 
+
+## Next Time
+
+A *very* brief introduction to hierarchical models for data
