@@ -1,0 +1,528 @@
+---
+title: "432 Class 21"
+author: Thomas E. Love, Ph.D.
+date: "2024-04-02"
+format: docx
+---
+
+
+## Today's Topic: Time-to-Event Data
+
+- Back in Class 14, we discussed
+    - Kaplan-Meier Estimation of the Survival Function
+    - Creating Survival Objects, Drawing Survival Curves
+    - Testing the difference between Survival Curves
+- Today: start Cox Proportional Hazards Regression
+  - The Hazard Function and its Estimation
+
+See Chapters 29-31 of our Course Notes
+
+## Setup
+
+```{r}
+#| echo: true
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor)
+library(broom)
+library(gt)
+library(rms)
+library(survival)
+library(survminer)
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+# A Simulated Example (`survex`)
+
+## The `survex` example (from Class 14)
+
+The `survex` data includes 1,000 subjects...
+
+- `sub_id` = patient ID (1-1000)
+- `age` = patient's age at study entry, years
+- `grp` = patient's group (A or B)
+- `study_yrs` = patient's years of observed time in study until death or censoring
+- `death` = 1 if patient died, 0 if censored.
+
+To start, we'll model a survival object `Surv(study_yrs, death)` using `grp`.
+
+## The survex example
+
+```{r}
+#| echo: true
+survex <- read_csv("c21/data/survex.csv", show_col_types = FALSE) |>
+  mutate(grp = factor(grp))
+
+survex
+```
+
+## Create a survival object
+
+```{r}
+#| echo: true
+surv_obj <- Surv(time = survex$study_yrs, 
+                 event = survex$death)
+
+head(surv_obj)
+```
+
+### Comparing Survival by Group
+
+```{r}
+#| echo: true
+km_grp <- survfit(surv_obj ~ survex$grp)
+
+km_grp
+```
+
+## Kaplan-Meier Estimates
+
+```{r}
+#| echo: true
+
+summary(km_grp)
+```
+
+## Plotting the K-M Curves
+
+```{r}
+#| echo: true
+ggsurvplot(km_grp, data = survex)
+```
+
+## Comparing Survival by group
+
+This is the log rank test.
+
+```{r}
+#| echo: true
+survdiff(surv_obj ~ survex$grp)
+```
+
+### Cumulative Event Rate for `km_grp`
+
+- Add fun = "event" to our `ggsurvplot`...
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggsurvplot(km_grp, data = survex, fun = "event",
+           xlab = "Time in years", break.time.by = 2,
+           risk.table = TRUE, risk.table.height = 0.25)
+```
+
+# The Hazard Function
+
+## The Hazard Function
+
+To build regression models for time-to-event data, we will need to introduce the *hazard function*, $H(t)$.
+
+If $S(t)$ is the survival function, and time $t$ is taken to be continuous, then $S(t) = e^{H(t)}$ defines $H(t)$. 
+
+- Note that $H(t)$ = $-ln(S(t))$.
+
+## Importance of the Hazard Function
+
+The function $H(t)$ is an important analytic tool. 
+
+- It is used to describe the concept of the risk of "failure" in an interval after time $t$, conditioned on the subject having survived to time $t$. 
+- $H(t)$ is often called the *cumulative hazard function*, to emphasize the fact that its value is the "sum" of the hazard up to time $t$.
+
+## Understanding the Hazard Function
+
+Consider a subject in the `survex` study who has a survival time of 4 years. 
+
+- For this subject to die at 4 years, they had to survive for the first 3 years. 
+- The subject's hazard at 4 years is the failure rate "per year" conditional on the subject being alive through the first 3 years.
+
+Let's ignore the group information for a moment.
+
+```{r}
+surv_obj <- Surv(time = survex$study_yrs, 
+                 event = survex$death)
+km1 <- survfit(surv_obj ~ 1)
+```
+
+
+## Estimating the Hazard Function
+
+Suppose we want to estimate $H(t)$ across all subjects. There are several different methods, but we'll focus on the inverse Kaplan-Meier estimator.
+
+I'll create something called `H.est1`, the inverse K-M estimate...
+
+```{r}
+#| echo: true
+Haz1.almost <- -log(km1$surv)
+H_est1 <- c(Haz1.almost, tail(Haz1.almost, 1))
+```
+
+## Tibble of times and hazard estimates
+
+```{r}
+#| echo: true
+haz_frame <- tibble(
+    time = c(km1$time, tail(km1$time, 1)),
+    inverse_KM = H_est1)
+
+haz_frame
+```
+
+## Cumulative Hazard Function from Inverse Kaplan-Meier
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(haz_frame, aes(x = time, y = inverse_KM)) + 
+    geom_step() + 
+    scale_x_continuous(breaks = c(0, 3, 6, 9, 12, 15)) +
+    labs(x = "Years of Follow-Up", 
+         y = "Cumulative Hazard of Death",
+         title = "Cumulative Hazard Function via Inverse K-M")
+```
+
+## Cumulative Hazard Plot via `ggsurvplot`
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggsurvplot(km1, data = survex, fun = "cumhaz",
+           conf.int = FALSE,
+           xlab = "Years of Follow-Up",
+           break.time.by = 3,
+           risk.table = FALSE)
+```
+
+## Plotting the Cumulative Hazard Function by Group
+
+For our `km_grp` fit, we'd use something like this...
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggsurvplot(km_grp, data = survex, fun = "cumhaz",
+           xlab = "Time in years",
+           pval = TRUE,
+           break.time.by = 2,
+           risk.table = TRUE,
+           risk.table.height = 0.25)
+```
+
+
+# Fitting a Cox Proportional Hazards Regression
+
+## Cox Proportional Hazards Regression
+
+```{r}
+#| echo: true
+mod_grp <- coxph(Surv(study_yrs, death) ~ grp, data = survex)
+```
+
+The Cox proportional hazards model fits survival data with a constant (not varying over time) covariate (here, `grp`) to a hazard function of the form:
+
+$$
+h(t|grp) = h_0(t) exp(\beta_1grp)
+$$
+
+where we estimate the unknown value of $\beta_1$ and where $h_0(t)$ is the baseline hazard which depends on $t$ but not on `grp`.
+
+## Coefficients of our Cox model
+
+```{r}
+#| echo: true
+mod_grp
+```
+
+Our hazard ratio estimate is 0.5382 for group B (vs. A)
+
+- Hazard Ratio < 1 indicates a decrease in hazard for subjects in group B as compared to those in group A.
+- Does this match our plot?
+
+
+## What if we also include Age?
+
+```{r}
+#| echo: true
+survex$S <- Surv(survex$study_yrs, survex$death)
+
+mod_age_grp <- coxph(S ~ grp + age, data = survex)
+
+mod_age_grp
+```
+
+## Tidied coefficients: Age + Group model
+
+```{r}
+#| echo: true
+tidy(mod_age_grp, exponentiate = TRUE, conf.int = T) |>
+    gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- If Harry is a year older than Steve and both are in the same group, Harry's hazard of death is 1.04 times that of Steve.
+- If Harry (group B) and Sally (group A) are the same age, then Harry's hazard of death is 0.55 times that of Sally.
+
+
+## `glance` for this `coxph` model?
+
+```{r}
+#| echo: true
+glance(mod_age_grp) |> select(3:10) |>
+  gt() |> tab_options(table.font.size = 20) |>
+  fmt_number(decimals = 3)
+
+glance(mod_age_grp) |> select(15:18) |>
+  gt() |> tab_options(table.font.size = 20) |>
+  fmt_number(columns = -nobs, decimals = 2)
+```
+
+We see results from log rank, score and Wald tests, as well as the AIC and BIC. But that's not all we can get from `glance()` with a Cox model...
+
+## Concordance and $R^2$
+
+```{r}
+#| echo: true
+glance(mod_age_grp) |> select(c(1:2, 11:14)) |>
+  gt() |> tab_options(table.font.size = 20) |>
+  fmt_number(columns = r.squared:std.error.concordance, decimals = 3)
+```
+
+The `concordance` is a goodness-of-fit measure. It describes the probability that the prediction goes in the same direction as the actual data (the fraction of concordant pairs between predictions and the data.) `glance` also provides a standard error for `concordance`.
+
+We also get a Cox-Snell $R^2$ along with its maximum value (< 1.)
+
+## Impact of adding `age` to `group`?
+
+```{r}
+#| echo: true
+
+anova(mod_age_grp, mod_grp)
+
+AIC(mod_age_grp, mod_grp)
+
+BIC(mod_age_grp, mod_grp)
+```
+
+## Checking the Proportional Hazards Assumption
+
+If the proportional hazards assumption is appropriate, we should see a slope of essentially zero in the residuals that are plotted against time on the next slide.
+
+- If we see a slope that seriously different from zero, that will suggest a violation of the proportional hazards assumption.
+- A hypothesis test is also performed, where a small *p* value indicates a potential problem with the assumption.
+
+## Plot to Check Proportional Hazards
+
+```{r}
+#| echo: true
+ggcoxzph(cox.zph(mod_age_grp))
+```
+
+## What happens if we see a violation?
+
+We could add a non-linear predictor term or use a different kind of survival model.
+
+- If the PH assumption fails on a categorical predictor, fit a Cox model stratified by that predictor (use `strata(var)` rather than `var` in the specification of the `coxph` model.)
+- If the PH assumption is violated, this means the hazard isn't constant over time, so we could fit separate Cox models for a series of time intervals.
+
+## If we see a violation...
+
+Another option would be to use an extension of the Cox model that permits covariates to vary over time.
+
+Visit <https://cran.r-project.org/web/packages/survival/vignettes/timedep.pdf> for details on building the relevant data sets and models, with examples.
+
+# A Real Data Example
+
+## The `brca` trial
+
+The `brca` data^[Chen and Peace (2011) *Clinical Trial Data Analysis Using R*, Section 5.1] describes a parallel randomized trial of three treatments, adjuvant to surgery in subjects with stage-2 carcinoma of the breast. 
+
+- `S_CT` = Surgery plus one year of chemotherapy
+- `S_IT` = Surgery plus one year of immunotherapy
+- `S_Both` = Surgery plus one year of chemotherapy and immunotherapy
+
+## Variables in our `brca` data
+
+The measure of efficacy was "time to death" in weeks. 
+
+In addition to `treat`, our variables are:
+
+- `trial_weeks`: time in the study, in weeks, to death or censoring
+- `last_alive`: 1 if alive at last follow-up (and thus censored), 0 if dead
+- `age`: age in years at the start of the trial
+
+## Ingesting the `brca` data 
+
+```{r}
+#| echo: true
+brca <- read_csv("c21/data/brca.csv", show_col_types = FALSE) |> 
+    mutate(across(where(is_character), as_factor),
+           subject = as.character(subject))
+```
+
+This is a typical right-censored survival data set with interest in the comparative analysis of the three treatments.
+
+1. Does immunotherapy added to surgery plus chemotherapy improve survival? (Comparing `S_Both` to `S_CT`)
+2. Does chemotherapy add efficacy to surgery plus immunotherapy? (`S_Both` vs. `S_IT`)
+3. What is the effect of `age` on survival?
+
+## The `brca` data (big problem: n = 31!)
+
+```{r}
+#| echo: true
+brca
+```
+
+
+## Create survival object
+
+- `trial_weeks`: time in the study, in weeks, to death or censoring
+- `last_alive`: 1 if alive at last follow-up (and thus censored), 0 if dead
+
+So `last_alive` = 0 if the event (death) occurs.
+
+```{r}
+#| echo: true
+brca$S <- with(brca, Surv(trial_weeks, last_alive == 0))
+
+head(brca$S)
+```
+
+## Build Kaplan-Meier Estimator
+
+```{r}
+#| echo: true
+kmfit <- survfit(S ~ treat, dat = brca)
+
+print(kmfit, print.rmean = TRUE)
+```
+
+## The Kaplan-Meier estimates
+
+```{r}
+#| echo: true
+summary(kmfit)
+```
+
+## K-M Plot via `survminer`
+
+```{r}
+#| echo: true
+ggsurvplot(kmfit, data = brca, risk.table = TRUE,
+           risk.table.height = 0.25, xlab = "Time in weeks")
+```
+
+## Testing the difference between curves
+
+```{r}
+#| echo: true
+survdiff(S ~ treat, dat = brca)
+```
+
+What do we conclude?
+
+# A Cox Model for Treatment
+
+## Fit Cox Model `mod_T`: Treatment alone
+
+```{r}
+#| echo: true
+mod_T <- coxph(S ~ treat, data = brca)
+mod_T
+```
+
+## Impact of Treatment on Survival
+
+```{r}
+#| echo: true
+summary(mod_T)
+```
+
+## Interpreting the Summaries
+
+```{r}
+#| echo: true
+tidy(mod_T, exponentiate = TRUE, conf.int = TRUE) |>
+    gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- A subject treated with `S_IT` is estimated to have 0.558 times the hazard (95% CI: 0.169, 1.840) of a subject treated with `S_CT` (the baseline).
+- A subject treated with `S_Both` is estimated to have 0.435 times the hazard (95% CI 0.121, 1.571) of a subject treated with `S_CT`.
+
+## Forest Plot for Treatment model
+
+```{r}
+#| echo: true
+ggforest(mod_T, data = brca)
+```
+
+## `glance(mod_T)` Fit Summaries
+
+```{r}
+#| echo: true
+glance(mod_T) |> select(1:8) |> gt() |> 
+  fmt_number(columns = 3:8, decimals = 3) |>
+  tab_options(table.font.size = 24)
+```
+
+shows the first eight columns.
+
+Below we show the other eight useful columns for 432.
+
+```{r}
+#| echo: true
+glance(mod_T) |> select(11:18) |> gt() |> 
+  fmt_number(columns = 1:7, decimals = 3) |> 
+  tab_options(table.font.size = 24)
+```
+
+## Summing up `glance(mod_T)`
+
+```{r}
+glance(mod_T) |> select(1:8) |> gt() |> 
+  fmt_number(columns = 3:8, decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+- `n` = 31 cases, with `nevent` = 15 events (so 16 censored)
+- log rank test statistic = 1.752, *p* = 0.416
+- Score test statistic = 1.895, *p* = 0.388
+- Wald test statistic = 1.820, *p* = 0.403
+    - Each tests $H_0$: Treatment adds no value
+
+## Summing up `glance(mod_T)`
+
+```{r}
+glance(mod_T) |> select(11:18) |> gt() |> 
+  fmt_number(columns = 1:7, decimals = 3) |> 
+  tab_options(table.font.size = 20)
+```
+
+- (Cox-Snell) R-Squared = 0.055, Maximum Pseudo R-Square = 0.944
+    - Cox and Snell's pseudo-$R^2$ reflects the improvement of this model over the model with the intercept alone, with higher values indicating more substantial improvement over an intercept-only model.
+    - Not really a percentage of anything: often the maximum value here is less than 1.
+
+## Summing up `glance(mod_T)`
+
+- Concordance = 0.577 (standard error = 0.083)
+    - Really only appropriate when we have at least one quantitative predictor in the Cox model
+    - Assesses probability of agreement between survival time and the risk score generated by the predictors
+    - 1 indicates perfect agreement, 0.5 indicates no better than chance
+- log Likelihood = -43.886, AIC = 91.773, BIC = 93.189
+    - Usual summaries, used to compare models, mostly
+
+## Graphical PH Check for `mod_T`
+
+```{r}
+#| echo: true
+ggcoxzph(cox.zph(mod_T))
+```
+
+## Next Time
+
+- Fitting more complex Cox models with `coxph` and `cph` (from `rms`) for the `brca` data
+- Reviewing some key ideas from the American Statistical Association's 2019 commentary on p values and statistical significance: "[Moving to a World Beyond p < 0.05](https://www.tandfonline.com/doi/full/10.1080/00031305.2019.1583913)"

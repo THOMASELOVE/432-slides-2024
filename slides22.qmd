@@ -1,0 +1,440 @@
+---
+title: "432 Class 22"
+author: Thomas E. Love, Ph.D.
+date: "2024-04-04"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 22 | 2024-04-04 | <https://thomaselove.github.io/432-2024/>"
+---
+
+
+## Today's Topic
+
+**Cox models for time-to-event data**
+
+- Returning to the breast cancer trial
+- Using `cph` from `rms` to fit a Cox model
+
+This material is discussed in Chapters 29-31 of our Course Notes
+
+**Replicable Research and the Crisis in Science**
+
+- Some reminders from the ASA's 2019 Statement on Statistical Inference in the 21st Century
+
+## Setup
+
+```{r}
+#| echo: true
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor)
+library(broom)
+library(gt)
+library(rms)
+library(survival)
+library(survminer)
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+## Our breast cancer data
+
+```{r}
+#| echo: true
+brca <- read_csv("c22/data/brca.csv", show_col_types = FALSE) |> 
+  mutate(across(where(is_character), as_factor),
+         subject = as.character(subject))
+
+head(brca)
+```
+
+## Recap of Class 21
+
+Data from a trial of three treatments for breast cancer
+
+- `brca` tibble with `treat` = S_CT, S_IT, S_Both and `age` at baseline
+- Time to event data are gathered in `trial_weeks` and `last_alive` which we used to create a survival object `S`.
+- Created Kaplan-Meier estimate, `kmfit` to compare the `treat` results
+- Then built a Cox model for treatment, called `mod_T`.
+
+## What Will We Do Now?
+
+- incorporate the covariate (`age`) into the model
+- use `cph` from the `rms` package to fit a Cox model that incorporates some non-linearity
+
+## Create survival object
+
+- `trial_weeks`: time in the study, in weeks, to death or censoring
+- `last_alive`: 1 if alive at last follow-up (and thus censored), 0 if dead
+
+So `last_alive` = 0 if the event (death) occurs.
+
+```{r}
+#| echo: true
+
+brca$S <- with(brca, Surv(trial_weeks, last_alive == 0))
+
+head(brca$S)
+```
+
+## Fit Cox Model `mod_T`: Treatment alone
+
+```{r}
+#| echo: true
+
+mod_T <- coxph(S ~ treat, data = brca)
+mod_T
+```
+
+## Fit Cox Model `mod_AT`: Age + Treatment
+
+```{r}
+#| echo: true
+
+mod_AT <- coxph(S ~ age + treat, data = brca)
+mod_AT
+```
+
+## Coefficients of `mod_AT`
+
+```{r}
+#| echo: true
+
+tidy(mod_AT, exponentiate = TRUE, conf.int = TRUE) |>
+  select(term, estimate, std.error, conf.low, conf.high) |>
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- If Harry and Sally receive the same `treat` but Harry is one year older, the model estimates Harry will have 1.08 times the hazard of Sally (95% CI 1.01, 1.16).
+
+## Coefficients of `mod_AT`
+
+```{r}
+tidy(mod_AT, exponentiate = TRUE, conf.int = TRUE) |>
+  select(term, estimate, std.error, conf.low, conf.high) |>
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- If Cyrus receives `S_IT` and Sally receives `S_CT`, and they are the same age, the model estimates Cyrus will have 0.73 times the hazard of Sally (95% CI 0.22, 2.41).
+- If Barry receives `S_Both` and Sally receives `S_CT`, and they are the same age, the model estimates Barry will have 0.55 times the hazard of Sally (95% CI 0.15, 1.99).
+
+
+## Comparing the Two Models
+
+`n` = 31, `nevent` = 15 for each model. 
+
+```{r}
+#| echo: true
+
+bind_rows(glance(mod_T), glance(mod_AT)) |>
+    mutate(model = c("mod_T", "mod_AT")) |>
+    select(model, p.value.log, concordance, r.squared, 
+           max_r2 = r.squared.max, AIC, BIC) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+What do the `glance` results indicate?
+
+## Likelihood Ratio ANOVA
+
+Comparing the `mod_AT` model with age and treatment to the `mod_T` model with treatment alone...
+
+```{r}
+#| echo: true
+
+anova(mod_AT, mod_T)
+```
+
+What does this suggest? Does this match with what AIC and BIC suggested?
+
+## Graphical PH Check for `mod_AT`
+
+```{r}
+#| echo: true
+ggcoxzph(cox.zph(mod_AT))
+```
+
+# Using `cph` from the `rms` package
+
+## Using `rms::cph` to fit a fancier `AxT`
+
+```{r}
+#| echo: true
+
+brca <- read_csv("c22/data/brca.csv", show_col_types = FALSE) |> 
+  mutate(across(where(is_character), as_factor),
+         subject = as.character(subject)) # reload without S
+
+d <- datadist(brca)
+options(datadist="d")
+
+brca$S <- with(brca, Surv(trial_weeks, last_alive == 0))
+
+cph_AxT <- cph(S ~ rcs(age, 4) + treat + age %ia% treat, 
+               data = brca, 
+               x = TRUE, y = TRUE, surv = TRUE)
+```
+
+## `cph_AxT` results
+
+```{r}
+#| echo: true
+
+cph_AxT
+```
+
+## Effects Plot
+
+```{r}
+#| echo: true
+plot(summary(cph_AxT))
+```
+
+## Effects Summary
+
+```{r}
+#| echo: true
+summary(cph_AxT)
+```
+
+## Validation of model summaries
+
+```{r}
+#| echo: true
+
+set.seed(4321234)
+validate(cph_AxT)
+```
+
+## ANOVA for `cph_AxT` model
+
+```{r}
+#| echo: true
+
+anova(cph_AxT)
+```
+
+## `survplot` in `rms` for `age` comparison
+
+```{r}
+#| echo: true
+
+survplot(cph_AxT, age = c(35, 45, 55, 65),
+         time.inc = 26, type = "kaplan-meier",
+         xlab = "Study Survival Time in weeks")
+```
+
+## `survplot` for `treat` comparison
+
+```{r}
+#| echo: true
+
+survplot(cph_AxT, treat, 
+         time.inc = 26, type = "kaplan-meier",
+         xlab = "Study Survival Time in weeks")
+```
+
+
+## Plotting `age` effect in `cph_AxT`
+
+```{r}
+#| echo: true
+
+ggplot(Predict(cph_AxT, age))
+```
+
+## Plotting `treat` effect in `cph_AxT`
+
+```{r}
+#| echo: true
+
+ggplot(Predict(cph_AxT, treat))
+```
+
+## `cph_AxT` nomogram 
+
+Suppose I want to show 4-year survival rates at the bottom of the nomogram. 4 years is 208 weeks, which is the unit of time the model works with, so we have...
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+sv <- Survival(cph_AxT)
+surv4 <- function(x) sv(208, lp = x)
+
+plot(nomogram(cph_AxT,
+              fun = surv4,
+              funlabel = c("4 year survival")))
+```
+
+## Proportional Hazards Assumption?
+
+```{r}
+#| echo: true
+cox.zph(cph_AxT, transform = "km", global = TRUE)
+```
+
+## Proportional Hazards Assumption?
+
+```{r}
+#| echo: true
+ggcoxzph(cox.zph(cph_AxT))
+```
+
+## More Cox Model Diagnostic Plots?
+
+- `survminer` has a function called `ggcoxdiagnostics()` which plots different types of residuals as a function of time, linear predictor or observation id. 
+  - See next slide for the default graph (martingale residuals.)
+  - Available diagnostics are specified with the `type` parameter, with options...
+
+```
+type = c("martingale", "deviance", "score", "schoenfeld", 
+        "dfbeta", "dfbetas", "scaledsch", "partial")
+```
+
+## Diagnostics from `survminer`
+
+```{r}
+#| echo: true
+ggcoxdiagnostics(cph_AxT)
+```
+
+## More on Survival Analysis?
+
+Our department teaches an entire course on this subject every Spring (PQHS 435). 
+
+# Some Reminders from the [ASA 2019 Statement on Statistical Inference](https://www.tandfonline.com/doi/full/10.1080/00031305.2019.1583913)
+
+## Moving to a World Beyond "*p* < 0.05"
+
+1. Getting to a Post "*p* < 0.05" Era
+2. Interpreting and Using *p*
+3. Supplementing or Replacing *p*
+4. Adopting more holistic approaches
+5. Reforming Institutions: Changing Publication Policies and Statistical Education
+
+- Long list of "things to do" in Section 7 of the main editorial.
+
+## Statistical Inference in the 21st Century
+
+![](c22/figures/ASA2019_title.PNG)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+- Statistical methods do not rid data of their uncertainty.
+
+![](c22/figures/ASA2019_2.png)
+
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+> We can make acceptance of uncertainty more natural to our thinking by accompanying every point estimate in our research with a measure of its uncertainty such as a standard error or interval estimate. Reporting and interpreting point and interval estimates should be routine.
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+> How will accepting uncertainty change anything? To begin, it will prompt us to seek better measures, more sensitive designs, and larger samples, all of which increase the rigor of research.
+
+> It also helps us be modest ... [and] leads us to be thoughtful.
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_3.png)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_4.png)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_5.png)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_6.png)
+
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_7.png)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_8.png)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_9.png)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_10.png)
+
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+![](c22/figures/ASA2019_11.png)
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+> The nexus of openness and modesty is to report everything while at the same time not concluding anything from a single study with unwarranted certainty. Because of the strong desire to inform and be informed, there is a relentless demand to state results with certainty. Again, accept uncertainty and embrace variation in associations and effects, because they are always there, like it or not.
+
+## ATOM: **A**ccept uncertainty. Be **T**houghtful, **O**pen and **M**odest.
+
+> Understand that expressions of uncertainty are themselves uncertain. Accept that one study is rarely definitive, so encourage, sponsor, conduct, and publish replication studies.
+
+> Be modest by encouraging others to reproduce your work. Of course, for it to be reproduced readily, you will necessarily have been thoughtful in conducting the research and open in presenting it.
+
+## On "Practical Benefit"
+
+Switch from reliance on statistical or practical significance to the more stringent statistical criterion of practical benefit for:
+
+- (a) assessing whether applied research findings indicate that an intervention is effective and should be adopted and scaled—particularly in complex organizations such as schools and hospitals and 
+
+- (b) determining whether relationships are sufficiently strong and explanatory to be used as a basis for setting policy or practice recommendations. 
+
+## On "Practical Benefit"
+
+Require that applied research reveal the actual unadjusted means/medians of results for all groups and subgroups, and that review panels take such data into account, as opposed to only reporting relative differences between adjusted means/medians.
+
+## So let's do it!
+
+![](c22/figures/ASA2019_12.png)
+
+## Ten of the Many Insights from the "Authors' Suggestions"
+
+1. Do not use p-values, unless you have clearly thought about the need to use them and they still seem the best choice.
+2. Develop and share teaching materials, software, and published case examples to help with all of the do’s above, and to spread progress in one discipline to others.
+3. Ask quantitative questions and give quantitative answers.
+
+## Ten of the Many Insights from the "Authors' Suggestions"
+
+4. Understand that subjective judgments are needed in all stages of a study.
+5. Do not dichotomize, but embrace variation. Report and interpret inferential statistics like the p-value in a continuous fashion; do not use the word “significant.” Interpret interval estimates as “compatibility intervals,” showing effect sizes most compatible with the data, under the model used to compute the interval; do not focus on whether such intervals include or exclude zero.
+
+## Ten of the Many Insights from the "Authors' Suggestions"
+
+6. Evaluate the strength of empirical evidence based on the precision of the estimates and the plausibility of the modeling
+choices. Seek out subject matter expertise when evaluating the importance and the strength of empirical evidence. Evaluate the importance of statistical results based on their practical implications.
+
+## Ten of the Many Insights from the "Authors' Suggestions"
+
+7. Be transparent in the number of outcome variables that were analyzed.
+8. Clearly describe data values that were excluded from analysis and the justification for doing so.
+9. Provide sufficient details on experimental design so that other researchers can replicate the experiment.
+10. Formulate a clear objective for variable inclusion in regression procedures.
+
+## What's Next?
+
+Using a `tidymodels` approach to fit linear models.
+
