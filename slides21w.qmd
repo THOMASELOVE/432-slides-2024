@@ -5,7 +5,6 @@ date: "2024-04-02"
 format: docx
 ---
 
-
 ## Today's Topic: Time-to-Event Data
 
 - Back in Class 14, we discussed
@@ -103,7 +102,16 @@ This is the log rank test.
 survdiff(surv_obj ~ survex$grp)
 ```
 
-### Cumulative Event Rate for `km_grp`
+## Log - Log plot of K-M estimation
+
+The two curves do not meet during the observation period, indicating the satisfaction of the proportional hazard assumption made by the log rank test. 
+
+```{r}
+#| echo: true
+plot(survfit(surv_obj ~ grp, data = survex), fun = "cloglog")
+```
+
+## Cumulative Event Rate for `km_grp`
 
 - Add fun = "event" to our `ggsurvplot`...
 
@@ -424,6 +432,15 @@ survdiff(S ~ treat, dat = brca)
 ```
 
 What do we conclude?
+
+## Log - Log plot to check PH assumption
+
+Do we satisfy the proportional hazard assumption made by the log rank test? Do these lines for treatments cross?
+
+```{r}
+#| echo: true
+plot(survfit(S ~ treat, data = brca), fun = "cloglog")
+```
 
 # A Cox Model for Treatment
 
