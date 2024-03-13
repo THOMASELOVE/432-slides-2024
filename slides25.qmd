@@ -1,0 +1,594 @@
+---
+title: "432 Class 25"
+author: Thomas E. Love, Ph.D.
+date: "2024-04-18"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 25 | 2024-04-18 | <https://thomaselove.github.io/432-2024/>"
+---
+
+
+## Today's Topic
+
+A brief introduction to ...
+
+- K-Means Clustering
+- Principal Components Analysis
+
+Examples:
+
+1. The 4000 biggest cities in the world
+2. The Palmer Penguins
+3. Arrest Rates in US States
+
+## Setup
+
+```{r}
+#| echo: true
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor)
+library(naniar)
+library(palmerpenguins)
+library(mdsr) # for the world_cities data set
+library(tidymodels)
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+# Clustering the 4,000 Biggest Cities in the World
+
+## World Cities Data
+
+- We'll start with an example from section 9.1.2 of Baumer, Kaplan and Horton's *Modern Data Science with R*.
+
+```{r}
+#| echo: true
+BigCities <- world_cities |>
+    arrange(desc(population)) |>
+    head(4000) |>
+    select(longitude, latitude)
+
+glimpse(BigCities)
+```
+
+## Cluster by the 6-means algorithm
+
+```{r}
+#| echo: true
+set.seed(432)
+city_clusts <- BigCities |>
+    kmeans(centers = 6) |>
+    fitted("classes") |>
+    as.character()
+
+BigCities <- BigCities |>
+    mutate(cluster = city_clusts)
+
+head(BigCities, 2)
+```
+
+## Map the cities and color by clusters
+
+```{r}
+#| echo: true
+#| fig-height: 5
+ggplot(BigCities, aes( x = longitude, y = latitude)) + 
+    geom_point(aes(color = cluster), alpha = 0.5)
+```
+
+- The clustering algorithm has (essentially) identified the continents.
+
+## How does K-Means Clustering Work?
+
+You can visit <https://www.tidymodels.org/learn/statistics/k-means/> for a brief explanation of the clustering process using an animation from Allison Horst. Here, I'll look at the pieces one slide at a time.
+
+Allison's materials are available at <https://github.com/allisonhorst/stats-illustrations/tree/master/other-stats-artwork>
+
+## From Allison Horst (1/11)
+
+![](c25/figures/kmeans_01.jpg)
+
+## From Allison Horst (2/11)
+
+![](c25/figures/kmeans_02.jpg)
+
+## From Allison Horst (3/11)
+
+![](c25/figures/kmeans_03.jpg)
+
+## From Allison Horst (4/11)
+
+![](c25/figures/kmeans_04.jpg)
+
+## From Allison Horst (5/11)
+
+![](c25/figures/kmeans_05.jpg)
+
+## From Allison Horst (6/11)
+
+![](c25/figures/kmeans_06.jpg)
+
+## From Allison Horst (7/11)
+
+![](c25/figures/kmeans_07.jpg)
+
+## From Allison Horst (8/11)
+
+![](c25/figures/kmeans_08.jpg)
+
+## From Allison Horst (9/11)
+
+![](c25/figures/kmeans_09.jpg)
+
+## From Allison Horst (10/11)
+
+![](c25/figures/kmeans_10.jpg)
+
+## From Allison Horst (11/11)
+
+![](c25/figures/kmeans_11.jpg)
+
+## The Palmer Penguins
+
+![](c25/figures/penguins.png)
+
+## The Palmer Penguins
+
+```{r}
+#| echo: true
+pen <- penguins |> ## from palmerpenguins package
+    select(bill_length_mm, bill_depth_mm, species) |>
+    drop_na()
+
+glimpse(pen)
+```
+
+## What is being measured?
+
+![](c25/figures/penguins2.png){width=75%}
+
+## Getting Started
+
+1. Create a data set with only numeric variables
+
+```{r}
+#| echo: true
+pen1 <- pen |> select(-species)
+```
+
+2. Scale each variable to have mean 0 and sd 1
+
+```{r}
+#| echo: true
+pen1 <- pen1 |> scale()
+
+summary(pen1)
+```
+
+## Decide on the number of clusters, then run k-means
+
+We know there are three types of penguins included, so let's try $k$ = 3. 
+
+```{r}
+#| echo: true
+pen_clust <- kmeans(pen1, centers = 3)
+pen_clust
+```
+
+
+## What do `tidy()` and `glance()` do?
+
+```{r}
+#| echo: true
+tidy(pen_clust)
+```
+
+```{r}
+#| echo: true
+glance(pen_clust)
+```
+
+## What does `augment()` do?
+
+```{r}
+#| echo: true
+pen_aug <- augment(pen_clust, pen)
+
+glimpse(pen_aug)
+```
+
+## Next Two Slides will show the results from ...
+
+### Plot of clusters
+
+```{r}
+#| echo: true
+#| eval: false
+ggplot(pen_aug, 
+       aes(x = bill_length_mm, y = bill_depth_mm)) +
+    geom_point(aes(color = .cluster, shape = .cluster), 
+               size = 4, alpha = 0.8) 
+```
+
+### Plot of clusters, faceted by species
+
+```{r}
+#| echo: true
+#| eval: false
+ggplot(pen_aug, 
+       aes(x = bill_length_mm, y = bill_depth_mm)) +
+    geom_point(aes(color = .cluster, shape = .cluster), 
+               size = 4, alpha = 0.8) +
+    facet_wrap(~ species)
+```
+
+## Plot clusters
+
+```{r}
+#| fig-height: 6
+ggplot(pen_aug, 
+       aes(x = bill_length_mm, y = bill_depth_mm)) +
+    geom_point(aes(color = .cluster, shape = .cluster), 
+               size = 4, alpha = 0.8) 
+```
+
+## Plot clusters, faceted by species?
+
+```{r}
+#| fig-height: 6
+ggplot(pen_aug, 
+       aes(x = bill_length_mm, y = bill_depth_mm)) +
+    geom_point(aes(color = .cluster, shape = .cluster), 
+               size = 4, alpha = 0.8) +
+    facet_wrap(~ species)
+```
+
+## Comparison of Cluster Results to Original `species`
+
+```{r}
+#| echo: true
+
+pen_aug |> tabyl(.cluster, species)
+```
+
+
+## What if we used a different number of clusters?
+
+```{r}
+#| echo: true
+p_clusts <-
+    tibble(k = 1:6) |>
+    mutate(
+        pclust = purrr::map(k, ~ kmeans(pen1, .x)),
+        ptidy = purrr::map(pclust, tidy),
+        pglance = purrr::map(pclust, glance),
+        paug = purrr::map(pclust, augment, pen))
+
+p_clusters <- p_clusts |> unnest(cols = c(ptidy))
+p_assigns <- p_clusts |> unnest(cols = c(paug))
+p_clusterings <- p_clusts |> unnest(cols = c(pglance))
+```
+
+## What do these clusters look like? 
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(p_assigns, 
+       aes(x = bill_length_mm, y = bill_depth_mm)) +
+    geom_point(aes(color = .cluster), alpha = 0.8) +
+    facet_wrap(~ k)
+```
+
+## Scree Plot to help choose best k
+
+```{r}
+#| echo: true
+ggplot(p_clusterings, aes(x = k, y = tot.withinss)) +
+    geom_line() + geom_point()
+```
+
+## Could we consider other penguin characteristics?
+
+- Only if they are numeric.
+
+```{r}
+#| echo: true
+
+pen_new <- penguins |>
+    select(flipper_length_mm, body_mass_g, 
+           species, island) |>
+    drop_na()
+
+pen2 <- pen_new |> select(-species, -island) |> scale()
+
+pen_clust2 <- kmeans(pen2, centers = 3)
+```
+
+## Augment with the clusters, and tabulate
+
+```{r}
+#| echo: true
+
+pen_aug2 <- augment(pen_clust2, pen_new)
+pen_aug2 |> tabyl(.cluster, species)
+pen_aug2 |> tabyl(.cluster, island)
+```
+
+## Plot second set of clusters, facet by species
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(pen_aug2,
+       aes(x = flipper_length_mm, y = body_mass_g)) +
+    geom_point(aes(color = .cluster, shape = .cluster),
+               size = 4, alpha = 0.8) +
+    facet_wrap(~ species)
+```
+
+# Principal Components and the Palmer Penguins
+
+## Principal Components Analysis (PCA)
+
+The goal here is to summarize the information contained in a large set of variables by means of a smaller set of "summary index" values that can be more easily visualized and analyzed.
+
+Statistically, PCA finds lines, planes and hyper-planes in K-dimensional space that approximate the data as well as possible, specifically by identifying components that maximize the variance of the projected data.
+
+## Principal Components Analysis (PCA)
+
+> ... in regression analysis, the larger the number of explanatory variables allowed, the greater is the chance of overfitting the model, producing conclusions that fail to generalise to other datasets. One approach, especially when there are strong correlations between different possible explanatory variables, is to reduce them to a few principal components and then run the regression against them, a method called principal component regression. (Wikipedia)
+
+## Principal Components Analysis (PCA) on the Penguins?
+
+Sure. See <https://allisonhorst.github.io/palmerpenguins/articles/pca.html> which is the basis for my next few slides.
+
+We'll build this within the `tidymodels` framework, and first use a few `recipe` steps to pre-process the data for PCA, specifically:
+
+1. remove all NA values
+2. center and scale all predictors
+
+## Penguin PCA Recipe
+
+```{r}
+#| echo: true
+
+penguin_recipe <-
+    recipe(~., data = penguins) |>
+    update_role(species, island, sex, 
+                new_role = "id") |>
+    step_naomit(all_predictors()) |>
+    step_normalize(all_predictors()) |>
+    step_pca(all_predictors(), id = "pca") |>
+    prep()
+
+penguin_pca <- 
+    penguin_recipe |>
+    tidy(id = "pca")
+```
+
+## Results for Penguin PCA
+
+```{r}
+#| echo: true
+
+penguin_pca
+```
+
+
+## An Easier-to-Use Presentation
+
+```{r}
+#| echo: true
+
+penguins |>
+  dplyr::select(body_mass_g, ends_with("_mm")) |>
+  tidyr::drop_na() |> scale() |> prcomp() 
+```
+
+
+## How much variance does each component account for?
+
+```{r}
+#| echo: true
+#| output-location: slide
+penguin_recipe |>
+  tidy(id = "pca", type = "variance") |>
+  dplyr::filter(terms == "percent variance") |>
+  ggplot(aes(x = component, y = value)) +
+  geom_col(fill = "navy") +
+  xlim(c(0, 5)) +
+  ylab("% of total variance")
+```
+
+
+## Plot PCA Loadings
+
+```{r}
+#| echo: true
+#| output-location: slide
+penguin_pca |>
+  mutate(terms = tidytext::reorder_within(terms,
+                                          abs(value),
+                                          component)) |>
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  tidytext::scale_y_reordered() +
+  scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  )
+```
+
+
+# K-Means Clustering with Arrests Data in US States
+
+## The `USArrests` data, from base R
+
+The `USArrests` data set from base R is a table containing the number of arrests per 100,000 residents in each US state in 1973 for `Murder`, `Assault` and `Rape`, along with the percentage of the population in each state that lives in urban areas, called `UrbanPop`.
+
+```{r}
+#| echo: true
+USArr73 <- USArrests |>
+    mutate(state = row.names(USArrests)) |>
+    relocate(state) |>
+    as_tibble()
+
+n_miss(USArr73)
+```
+
+## The cleaned `USArr73` tibble
+
+```{r}
+#| echo: true
+USArr73
+```
+
+## Scale each variable to have mean 0 and sd 1
+
+```{r}
+#| echo: true
+USArr73_s <- USArr73 |> select(-state) |> scale()
+
+row.names(USArr73_s) <- row.names(USArrests)
+
+head(USArr73_s)
+```
+
+## Fit 3-means clustering
+
+```{r}
+#| echo: true
+kclust <- kmeans(USArr73_s, centers = 3)
+kclust
+```
+
+## Summary of 3-means clustering
+
+```{r}
+#| echo: true
+summary(kclust)
+```
+
+## Use `augment()` from `broom`
+
+```{r}
+#| echo: true
+augment(kclust, USArr73_s)
+```
+
+## Use `tidy()` and `glance()` from `broom`
+
+```{r}
+#| echo: true
+tidy(kclust)
+```
+
+```{r}
+#| echo: true
+glance(kclust)
+```
+
+## Use 1-9 clusters now
+
+```{r}
+#| echo: true
+kclusts <- 
+  tibble(k = 1:9) |>
+  mutate(
+    kclust = purrr::map(k, ~ kmeans(USArr73_s, .x)),
+    tidied = purrr::map(kclust, tidy),
+    glanced = purrr::map(kclust, glance),
+    augmented = purrr::map(kclust, augment, USArr73_s)
+  )
+```
+
+```{r}
+#| echo: true
+clusters <- kclusts |> unnest(cols = c(tidied))
+assignments <- kclusts |> unnest(cols = c(augmented))
+clusterings <- kclusts |> unnest(cols = c(glanced))
+```
+
+## Plots on Next Three Slides (code)
+
+### Plot 1
+
+```{r}
+#| echo: true
+#| eval: false
+ggplot(assignments, aes(x = UrbanPop, y = Murder)) +
+    geom_point(aes(color = .cluster), alpha = 0.8) +
+    facet_wrap(~ k)
+```
+
+### Plot 2
+
+```{r}
+#| echo: true
+#| eval: false
+ggplot(assignments, aes(x = UrbanPop, y = Murder)) +
+    geom_point(aes(color = .cluster), alpha = 0.8) +
+    geom_point(data = clusters, size = 10, shape = "x") +
+    facet_wrap(~ k)
+```
+
+### Plot 3
+
+```{r}
+#| echo: true
+#| eval: false
+ggplot(clusterings, aes(x = k, y = tot.withinss)) +
+    geom_line() + geom_point()
+```
+
+## Plot 1
+
+```{r}
+#| fig-height: 6
+
+ggplot(assignments, aes(x = UrbanPop, y = Murder)) +
+    geom_point(aes(color = .cluster), alpha = 0.8) +
+    facet_wrap(~ k)
+```
+
+## Plot 2
+
+```{r}
+#| fig-height: 6
+ggplot(assignments, aes(x = UrbanPop, y = Murder)) +
+    geom_point(aes(color = .cluster), alpha = 0.8) +
+    geom_point(data = clusters, size = 10, shape = "x") +
+    facet_wrap(~ k)
+```
+
+## Plot 3
+
+```{r}
+#| fig-height: 6
+ggplot(clusterings, aes(x = k, y = tot.withinss)) +
+    geom_line() + geom_point()
+```
+
+## Next Time
+
+Building and Assessing Statistical Work in 2024
+
+- [Statistical Problems to Document and To Avoid](https://discourse.datamethods.org/t/author-checklist/3407)
+- [A CHecklist for statistical Assessment of Medical Papers (the CHAMP statement): explanation and elaboration](https://bjsm.bmj.com/content/55/18/1009.2)
+- [Biostatistical Modeling Plan](https://www.fharrell.com/post/modplan) from Frank Harrell.
