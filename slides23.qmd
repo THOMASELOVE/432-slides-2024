@@ -1,0 +1,626 @@
+---
+title: "432 Class 23"
+author: Thomas E. Love, Ph.D.
+date: "2024-04-11"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 23 | 2024-04-11 | <https://thomaselove.github.io/432-2024/>"
+---
+
+
+## Today's Topic
+
+The tidymodels framework
+
+- Using `tidymodels` tools to develop a linear regression model
+    - Pre-processing activities
+    - Model building (with multiple fitting engines)
+    - Measuring model effectiveness
+    - Creating a model workflow
+
+## Setup
+
+```{r}
+#| echo: true
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor)
+library(gt)
+library(tidymodels)
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+## Regression Frameworks, 1/2
+
+Generally, regression allows us to summarize how predictions (or average values) of an outcome vary across individuals defined by a set of predictors. 
+
+Some of the most important uses of regression^[Gelman, Hill and Vehtari, *Regression and Other Stories*] include:
+
+- **Prediction**, which involves both modeling existing observations and forecasting new data.
+- **Exploring Associations**, where we summarize how well a set of variables predicts the outcome.
+
+## Regression Frameworks, 2/2
+
+- **Extrapolation**, where we are adjusting for known differences between the observed sample of data and a population of interest.
+- **Causal Inference**, where we are estimating the effect of a treatment, by comparing outcomes under treatment or control, or under different levels of a treatment\footnote{My 500 course spends a whole semester on one important part of this subject.}.
+
+## Research Questions for Regression Models
+
+- "How effectively can [insert quantitative outcome] be predicted using [insert predictor(s)]?" for a linear regression project, and
+- "How effectively can [insert binary outcome] be predicted using [insert predictor(s)]?" for a logistic regression project.
+
+If you're struggling with this, or if your research question isn't in the form of a question, consider these approaches. 
+
+## Advantages of these RQ approaches
+
+1. regression can help provide an answer to these questions and in discussing your results you'll need to answer the questions 
+2. framing models in terms of exploring associations has some value for the tools we're discussing and 
+3. it's pretty clear what you're doing, based just on your research question.
+
+If you're doing something else, I still need to think that you meet standards (1) and (3) at least.
+
+## Using R to fit Regression Models
+
+For linear models, we have:
+
+- `lm` to fit models for quantitative outcomes, compute and plot predictions and residuals, obtain confidence intervals, etc.
+- `ols` from the `rms` package to save and explore additional components of the model's fit and to (slightly) expand the capacity for `lm` fits to incorporate non-linear terms and multiple imputations.
+
+## Using R to fit Regression Models
+
+For logistic models, we have:
+
+- `glm` to fit models for binary outcomes, compute and plot predictions, hypothesis tests and confidence intervals
+- `lrm` from `rms` to save and explore additional components of the model's fit and to (slightly) expand the capacity for `glm` fits to incorporate non-linear terms and multiple imputations.
+
+These are by no means the only options for fitting or working with models.
+
+## What are `tidymodels`?
+
+The `tidymodels` collection of packages in R use tidyverse principles to facilitate modeling and machine learning work. The key idea is to develop a consistent framework for modeling.
+
+Visit the `tidymodels` website at <https://www.tidymodels.org/>.
+
+## What is in the `tidymodels` framework?
+
+- pre-processing data, which includes identifying variables and their roles, re-expression of outcomes, creation of features (predictors) 
+- building a model (potentially with multiple fitting "engines")
+- developing a re-usable workflow 
+- evaluating the fit of one model or various models with a variety of validation strategies
+
+## Core Tidymodels Packages {.smaller}
+
+Install many of the packages in the `tidymodels` ecosystem with `install.packages(tidymodels)`.
+
+When you use `library(tidymodels)`, this makes the core packages available in your R session. They include:
+
+- `rsample` which will help with data splitting and resampling
+- `parsnip` which provides a tidy, unified interface for models
+- `recipes` for data pre-processing and feature engineering
+- `yardstick` for measuring model effectiveness
+- `broom` for converting R objects into predictable formats
+- `workflows` for bundling together pre-processing, modeling and post-processing work
+
+as well as `dials` and `tune`, which help manage and optimize tuning parameters in certain types of models.
+
+## Today's Data (from Class 06)
+
+Heart and Estrogen/Progestin Study (HERS)
+
+- Clinical trial of hormone therapy for the prevention of recurrent heart attacks and deaths among 2763 post-menopausal women with existing coronary heart disease (see Hulley et al 1998 and many subsequent references, including Vittinghoff, Chapter 4.)
+- We're excluding the women in the trial with a diabetes diagnosis and those with missing LDL values.
+
+## Ingesting the HERS data
+
+```{r}
+#| echo: true
+hers_raw <- read_csv("c23/data/hersdata.csv", show_col_types = FALSE) |> 
+    clean_names()
+
+hers_new <- hers_raw |>
+  filter(diabetes == "no") |>
+  filter(complete.cases(ldl1, ldl)) |>
+  select(subject, ldl1, ldl, age, ht, globrat) |>
+  mutate(ht = factor(ht), globrat = factor(globrat),
+         subject = as.character(subject))
+```
+
+### Our Goal
+
+Predict percentage change in `ldl` from baseline to followup, using baseline `age`, `ht`, `ldl` and `globrat`, restricted to women without `diabetes`.
+
+## `hers_new` Codebook (n = `r nrow(hers_new)`)
+
+Variable   | Description 
+---------: | --------------------------------- 
+`subject`  | subject code 
+`ht`       | factor: hormone therapy or placebo 
+`ldl`      | baseline LDL cholesterol in mg/dl 
+`age`      | baseline age in years 
+`globrat`  | baseline self-reported health (5 levels)
+`ldl1`     | LDL at first annual study visit
+`diabetes` | yes or no (all are no in our sample)
+
+## `hers_new` tibble
+
+```{r}
+#| echo: true
+hers_new
+```
+
+
+## Steps we'll describe today
+
+1. Create our outcome and consider a transformation.
+2. Split the data into training and testing samples.
+3. Build a recipe for our model.
+    - Specify roles for outcome and predictors.
+    - Deal with missing data in a reasonable way.
+    - Complete all necessary pre-processing so we can fit models.
+
+Key Reference: Kuhn and Silge, [Tidy Modeling with R](https://www.tmwr.org/) or TMWR
+
+## Steps we'll describe today
+
+4. Specify a modeling engine for each fit we will create.
+    - There are five available engines just for linear regression!
+5. Create a workflow for each engine and fit model to the training data.
+6. Compare coefficients graphically from two modeling approaches.
+7. Assess model performance in the training data.
+8. Compare models based on their test data performance.
+
+## Stage 1: Create our outcome
+
+```{r}
+#| echo: true
+
+hers_new <- hers_new |>
+    mutate(ldl_pch = 100*(ldl1 - ldl)/ldl)
+```
+
+```{r}
+#| fig-height: 3
+ggplot(hers_new, aes(x = ldl_pch, y = 1)) +
+    geom_violin(fill = "peachpuff") + 
+    geom_boxplot(width = 0.3, outlier.size = 2, notch = TRUE) +
+    guides(fill = "none") +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank()) +
+    labs(y = "", x = "Percentage Change in LDL after One Year")
+
+mosaic::favstats(~ ldl_pch, data = hers_new) |>
+    gt() |> fmt_number(decimals = 1) |> tab_options(table.font.size = 20)
+```
+
+## Stage 2: Partition to Training/Test
+
+![](c23/figures/rsample.png)
+
+Here, we'll use the `rsample` package to split our data.
+
+```{r}
+#| echo: true
+set.seed(20210309)
+hers_split <- initial_split(hers_new, prop = 0.8)
+
+hers_train <- training(hers_split)
+hers_test <- testing(hers_split)
+```
+
+We start with `r nrow(hers_new)` women in `hers_new`, which we split into `r nrow(hers_train)` women in the training sample, leaving `r nrow(hers_test)` women in the testing sample.
+
+## What else can we do with `rsample`?
+
+- Stratified sampling (splitting) on a categorical variable to ensure similar distributions of those categories in the training and testing groups.
+
+```
+initial_split(hers_new, prop = 0.8, strata = ht)
+```
+
+- What if you have time series data? 
+    - Use `initial_time_split()` to identify the first part of the data as the training set and the rest in the test set; this assumes the data were pre-sorted in a sensible order.
+
+## What Should Be In A Test Set?
+
+The test set should always resemble new data we might give to the model.
+
+> A test set should be avoided only when the data are pathologically small.
+
+- TMWR, Section 5.2
+
+## What about a validation set?
+
+- Would like to avoid overfitting (where the models do much better on the training set samples than you do on the test set)
+- Idea is to hold back a validation set of data to measure performance while training prior to moving on with a model to the test set.
+- This is really just a special case of a resampling method used on the training set, as described in TMWR section 10 (see next slide).
+
+## From TMWR, Section 10.2
+
+![](c23/figures/validation.png){height=85%}
+
+## Stage 3: Pre-Processing the Data 
+
+![](c23/figures/recipes.png)
+
+A recipe for pre-modeling work might
+
+- establish the roles (outcome, predictors, identifiers) for variables
+- establish pre-processing steps for predictors
+
+<https://www.tidymodels.org/find/recipes/> lists all recipes
+
+## Examples of Pre-Processing steps for predictors (feature engineering)
+
+- transforming predictors, including all of our usual power transformations, but also centering, scaling or normalizing and more complex mutations
+- creating dummy (indicator) variables for categorical data
+- dealing with factors and factor levels
+- including interactions, polynomials or splines
+- filtering out variables with zero variance
+- dealing with missing data via imputation or removal
+
+## Building a Recipe for our modeling
+
+```{r}
+#| echo: true
+hers_rec <- 
+    recipe(ldl_pch ~ age + ht + ldl + globrat, 
+           data = hers_new) |>                     # 1
+    step_impute_bag(all_predictors()) |>           # 2
+    step_poly(ldl, degree = 2) |>                  # 3
+    step_dummy(all_nominal()) |>                   # 4
+    step_normalize(all_predictors())               # 5
+```
+
+1. Specify the roles for the outcome and the predictors.
+2. Impute missing predictors with bagged tree models.
+3. Use an orthogonal polynomial of degree 2 in baseline LDL.
+4. Form dummy variables to represent all categorical variables.
+5. Normalize (subtract mean, divide by SD) all quantitative predictors.
+
+## Column Roles 
+
+```
+hers_rec <- recipe(ldl_pch ~ age + ht + ldl + globrat, data = hers_new)
+```
+
+- Everything to the left of the `~` is an outcome.
+- Everything to the right of the `~` is a predictor.
+
+Sometimes we want to assign other roles, like "id" for an important identifier, or "split" for a splitting variable.
+
+- Any character string can be a role, and columns can have multiple roles
+- `add_role()`, `remove_role()` and `update_role()` functions are helpful
+
+## Common steps in a recipe, 1 {.smaller}
+
+- Power Transformations of Predictors
+    - `step_log(x1, base = 10)` (default base is exp(1)), `step_sqrt`, `step_inverse`
+    - `step_BoxCox()` will transform predictors using a simple Box-Cox transformation to make them more symmetric  (remember this does require a strictly positive variable, and will be something we'd use more for an outcome using the residuals for a statistical model).
+    - `step_YeoJohnson()` uses the Yeo_Johnson transformation (again, typically on the outcome model) which is like Box-Cox but doesn't require the input variables to be strictly positive.
+- `step_logit` and `step_invlogit`
+
+<https://www.tidymodels.org/find/recipes/> lists available recipes
+
+## Common steps in a recipe, 2 {.smaller}
+
+- Non-Linear Terms for Quantitative Predictors
+    - `step_poly()` produces orthogonal polynomial basis functions
+    - `step_ns(x5, deg_free = 10)` from the `splines` package can create things called natural splines - the number of spline terms is a tuning parameter, `step_bs()` adds B-spline basis functions    
+
+- Dealing with Categorical Predictors
+    - `step_dummy(all_nominal())` which converts all factor or categorical variables into indicator (also called dummy) variables: numeric variables which take 1 and 0 as values to encode the categorical information
+        - Other helpful selectors: `all_numeric()`, `all_predictors()` and `all_outcomes()`
+        - If you want to select specific variables, you could use `step_dummy(x2, x3)`
+
+
+## Common steps in a recipe, 3 {.smaller}
+
+
+- Dealing with Categorical Predictors (continued)
+    - `step_relevel()` reorders the provided factor columns so that a level you specify is first (the baseline)
+    - If you have ordered factors in R, try `step_unorder()` to convert to regular factors or `step_ordinalscore()` to map specific numeric values to each factor level
+    - `step_unknown()` to change missing values in a categorical variable to a dedicated factor level
+    - `step_novel()` creates a new factor level that may be encountered in future data
+    - `step_other()` converts infrequent values to a catch-all labeled "other" using a threshold
+        - `step_other(x5, threshold = 0.05)` places bottom 5% of data in `x5` into "other".
+        
+## Common steps in a recipe, 4 {.smaller}
+
+- Create Interaction Terms
+    - `step_interact(~ interaction terms)` can be used to set up interactions
+- Filter rows?
+    - `step_filter()` can be used to filter rows using `dplyr` tools
+- `step_mutate()` can be used to conduct a variety of basic operations
+- `step_ratio()` can be used to create ratios of current variables
+- Zero Variance Filters
+    - `step_zv()` is the zero variance filter which removes variables that contain only a single value.
+    - `step_nzv()` removes variables with very few unique values or for whom the ratio of the frequency of the most common value to the second most common value is large
+
+## Common steps in a recipe, 5 {.smaller}
+
+- Centering and Scaling Predictors
+    - `step_normalize()` to center and scale quantitative predictors
+    - `step_center()` just centers predictors
+    - `step_scale()` just scales numeric data and 
+    - `step_range()` to scale numeric data to a specific range
+- Step options for imputation include things like
+    - `step_meanimpute()` and `step_medianimpute()` to impute with mean or median,
+    - `step_modelimpute()` to impute nominal data using the most common value, 
+    - `step_bagimpute()` for imputation via bagged trees, 
+    - `step_knnimpute()` to impute via k-nearest neighbors 
+- `step_naomit()` can be used to remove observations with missing values
+
+
+
+## Stage 4: Specify modeling engine
+
+![](c23/figures/parsnip.png)
+
+```{r}
+#| echo: true
+hers_lm_model <- linear_reg() |> set_engine("lm")
+```
+
+Other available engines for linear regression include:
+
+- `stan` to fit Bayesian models, `spark`, and `keras`
+
+All parsnip engines: <https://www.tidymodels.org/find/parsnip/>
+
+## Stage 4: Specify `stan` modeling engine for `fit2`
+
+As an alternative, we'll often consider a Bayesian linear regression model as fit with the "stan" engine. This requires the pre-specification of a prior distribution for the coefficients, for instance:
+
+```{r}
+#| echo: true
+prior_dist_int <- rstanarm::student_t(df = 1)
+prior_dist_preds <- rstanarm::student_t(df = 1)
+
+hers_stan_model <- linear_reg() |> 
+    set_engine("stan",
+               prior_intercept = prior_dist_int,
+               prior = prior_dist_preds)
+```
+
+## Stage 5: Create a workflow for the `lm` model
+
+![](c23/figures/workflows.png){width=80%}
+
+```{r}
+#| echo: true
+hers_lm_wf <- workflow() |>
+    add_model(hers_lm_model) |>
+    add_recipe(hers_rec)
+```
+
+### Fit the `lm` model to the training sample
+
+```{r}
+#| echo: true
+fit1 <- fit(hers_lm_wf, hers_train)
+```
+
+## `fit1` results
+
+```{r}
+#| echo: true
+
+fit1
+```
+
+
+## Tidy the coefficients for `fit1`?
+
+![](c23/figures/broom.png)
+
+We know about `tidy()`, `glance()` and `augment()`, of course.
+
+## Tidied `fit1` coefficients
+
+```{r}
+#| echo: true
+tidy(fit1, conf.int = T) |> 
+  select(term, estimate, std.error, conf.low, conf.high) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+## glance at the `fit1` summaries?
+
+```{r}
+#| echo: true
+fit1 |> extract_fit_parsnip() |> 
+  glance() |> select(1:6) |> 
+  gt() |> fmt_number(columns = 1:5, decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+fit1 |> extract_fit_parsnip() |> 
+  glance() |> select(7:12) |> 
+  gt() |> fmt_number(columns = 1:4, decimals = 1) |> 
+  tab_options(table.font.size = 20)
+```
+
+## Stage 5: Create a workflow for the `stan` model
+
+```{r}
+#| echo: true
+hers_stan_wf <- workflow() |>
+    add_model(hers_stan_model) |>
+    add_recipe(hers_rec)
+```
+
+### Fit the `stan` model to the training sample
+
+```{r}
+#| echo: true
+set.seed(43202)
+fit2 <- fit(hers_stan_wf, hers_train)
+```
+
+## `fit2` results
+
+```{r}
+#| echo: true
+
+fit2
+```
+
+
+## Tidy the `fit2` coefficients?
+
+`stan` model requires the `broom.mixed` package to tidy fit.
+
+```{r}
+#| echo: true
+broom.mixed::tidy(fit2, conf.int = T) |> gt() |> 
+  fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+## Stage 6: Compare model coefficients
+
+```{r}
+#| echo: true
+coefs_lm <- tidy(fit1, conf.int = TRUE) |>
+    select(term, estimate, conf.low, conf.high) |>
+    mutate(mod = "lm")
+
+coefs_stan <- tidy(fit2, conf.int = TRUE) |>
+    select(term, estimate, conf.low, conf.high) |>
+    mutate(mod = "stan")
+
+coefs_comp <- bind_rows(coefs_lm, coefs_stan) 
+```
+
+## Graph model coefficients
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+ggplot(coefs_comp, aes(x = term, y = estimate, col = mod,
+                       ymin = conf.low, ymax = conf.high)) +
+  geom_point(position = position_dodge2(width = 0.4)) +
+  geom_pointrange(position = position_dodge2(width = 0.4)) +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  coord_flip() +
+  labs(x = "", y = "Estimate (with 95% confidence interval)",
+    title = "Comparing the lm and stan model coefficients")
+```
+
+## Stage 7. Assess model in training sample
+
+![](c23/figures/yardstick.png)
+
+Available regression performance metrics include:
+
+- `rsq` (r-squared, via correlation - always between 0 and 1)
+- `rmse` (root mean squared error)
+- `mae` (mean absolute error)
+- `rsq_trad` (r-squared, calculated via sum of squares)
+
+## Make predictions using `fit1` in training sample
+
+```{r}
+#| echo: true
+lm_pred_train <- 
+    predict(fit1, hers_train) |>
+    bind_cols(hers_train |> dplyr::select(ldl_pch))
+
+# we'll use R-squared and RMSE here, today
+mets <- metric_set(rsq, rmse)
+
+lm_res_train <- 
+    mets(lm_pred_train, truth = ldl_pch, estimate = .pred)
+```
+
+## Make predictions using `fit2` in training sample
+
+```{r}
+#| echo: true
+stan_pred_train <- 
+    predict(fit2, hers_train) |>
+    bind_cols(hers_train |> select(ldl_pch))
+
+# remember
+mets <- metric_set(rsq, rmse)
+
+stan_res_train <- 
+    mets(stan_pred_train, truth = ldl_pch, estimate = .pred)
+```
+
+We'll see the results from each fit on the next slide.
+
+## `fit1` and `fit2` (training sample)
+
+```{r}
+#| echo: true
+lm_res_train |> gt() |> 
+  fmt_number(decimals = 4) |> tab_options(table.font.size = 20)
+
+stan_res_train |> gt() |> 
+  fmt_number(decimals = 4) |> tab_options(table.font.size = 20)
+```
+
+## What about adjusted $R^2$?
+
+The `yardstick` package doesn't use adjusted $R^2$.
+
+- `tidymodels` wants you to compute performance on a separate data set for comparing models rather than doing what adjusted $R^2$ tries to do, which is evaluate the model on the same data as were used to fit the model.
+
+I wrote more on the adjusted $R^2$ statistic in the Class 23 README.
+
+## Stage 8. Compare model performance on test data
+
+```{r}
+#| echo: true
+lm_pred_test <- 
+    predict(fit1, hers_test) |>
+    bind_cols(hers_test |> dplyr::select(ldl_pch))
+
+lm_res_test <- 
+    mets(lm_pred_test, truth = ldl_pch, estimate = .pred)
+
+stan_pred_test <- 
+    predict(fit2, hers_test) |>
+    bind_cols(hers_test |> select(ldl_pch))
+
+stan_res_test <- 
+    mets(stan_pred_test, truth = ldl_pch, estimate = .pred)
+```
+
+## `fit1` and `fit2` (training sample)
+
+```{r}
+#| echo: true
+lm_res_test |> gt() |> 
+  fmt_number(decimals = 4) |> tab_options(table.font.size = 20)
+
+stan_res_test |> gt() |> 
+  fmt_number(decimals = 4) |> tab_options(table.font.size = 20)
+```
+
+## Where to Learn More
+
+- [Tidy Modeling with R](https://www.tmwr.org/) by Max Kuhn and Julia Silge.
+    - The Basics section (Chapters 4-9) as well as chapters 10-11 were my main tools for learning about these ideas.
+- Julia Silge has many nice videos on YouTube demonstrating various things that `tidymodels` can accomplish.
+    - I've recommended several in today's README.
+
+### Next Time
+
+We'll apply ideas from the `tidymodels` framework to fit a logistic regression model.
+
