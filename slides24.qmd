@@ -1,0 +1,572 @@
+---
+title: "432 Class 24"
+author: Thomas E. Love, Ph.D.
+date: "2024-04-16"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 24 | 2024-04-16 | <https://thomaselove.github.io/432-2024/>"
+---
+
+
+## Today's Topic
+
+Fitting logistic regressions using `tidymodels` packages
+
+- Pre-processing activities
+- Model building (with multiple fitting engines)
+- Measuring model effectiveness
+- Creating a model workflow
+
+## Setup
+
+```{r}
+#| echo: true
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor)
+library(gt)
+library(naniar)
+library(rstanarm)
+library(rms)
+library(tidymodels)
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+## Today's Data (from Class 10)
+
+```{r}
+#| echo: true
+fram_raw <- read_csv("c24/data/framingham.csv",
+                     show_col_types = FALSE) |>
+    type.convert(as.is = FALSE) |>
+    clean_names() 
+```
+
+The variables describe n = `r nrow(fram_raw)` adults examined at baseline, then followed for 10 years to see if they developed incident coronary heart disease. Our outcome (below) has no missing values.
+
+```{r}
+#| echo: true
+fram_raw |> tabyl(ten_year_chd)
+```
+
+## Data Cleanup
+
+```{r}
+#| echo: true
+fram_new <- fram_raw |>
+    rename(cigs = "cigs_per_day",
+           stroke = "prevalent_stroke",
+           hrate = "heart_rate",
+           sbp = "sys_bp",
+           chd10_n = "ten_year_chd") |>
+    mutate(educ = fct_recode(factor(education), 
+                     "Some HS" = "1",
+                     "HS grad" = "2",
+                     "Some Coll" = "3",
+                     "Coll grad" = "4")) |>
+    mutate(chd10_f = fct_recode(factor(chd10_n),
+                     "chd" = "1", "chd_no" = "0")) |>
+    select(subj_id, chd10_n, chd10_f, age, 
+           cigs, educ, hrate, sbp, stroke)
+```
+
+## Today's (main) Variables {.smaller}
+
+Variable | Description
+-------: | ------------------------------------------------
+`subj_id` | identifying code added by Dr. Love
+`chd10_n` | (numeric) 1 = coronary heart disease in next 10y
+`chd10_f` | (factor) "chd" or "chd_no" in next ten years
+`age`     | in years (range is 32 to 70)
+`cigs`    | number of cigarettes smoked per day
+`educ`    | 4-level factor: educational attainment
+`hrate`   | heart rate in beats per minute
+`sbp`     | systolic blood pressure in mm Hg
+`stroke`  | 1 = history of stroke, else 0
+
+## Steps we'll describe today
+
+1. Prepare our (binary) outcome.
+2. Split the data into training and testing samples.
+3. Build a recipe for our model.
+    - Specify roles for outcome and predictors.
+    - Deal with missing data in a reasonable way.
+    - Complete all necessary pre-processing so we can fit models.
+4. Specify a modeling engine for each fit we will create.
+
+## Steps we'll describe today
+
+5. Create a workflow for each engine and fit model to the training data.
+6. Compare coefficients graphically from two modeling approaches.
+7. Assess performance in the models we create in the training data.
+8. Compare multiple models based on their performance in test data.
+
+Key Reference: Kuhn and Silge, [Tidy Modeling with R](https://www.tmwr.org/)
+
+## Stage 1. Prepare our outcome.
+
+To do logistic regression using `tidymodels`, we'll want our binary outcome to be a factor variable.
+
+```{r}
+#| echo: true
+str(fram_new$chd10_f)
+```
+
+```{r}
+#| echo: true
+fram_new |> tabyl(chd10_f, chd10_n)
+```
+
+## Working with Binary Outcome Models
+
+Does Pr(CHD in next ten years) look higher for *older* or *younger* people?
+
+```{r}
+#| fig-height: 3
+ggplot(fram_new, aes(x = age, y = chd10_f)) + 
+    geom_violin(fill = "wheat") +
+    geom_boxplot(fill = "turquoise", width = 0.3, notch = TRUE)
+```
+
+```{r}
+fram_new |> group_by(chd10_f) |> 
+    summarize(n = n(), mean(age), sd(age), median(age)) |>
+    gt() |> fmt_number(decimals = 2) |> tab_options(table.font.size = 20)
+```
+
+## So what do we expect in this model?
+
+Pr(CHD in next ten years) looks higher for *older* people?
+
+If we predict log(odds(CHD in next ten years)), we want to ensure that value will be **rising** with increased age.
+
+So, for the `mage_1` model below, what sign do we expect for the slope of `age`?
+
+```{r}
+#| echo: true
+mage_1 <- glm(chd10_f ~ age, family = binomial, 
+              data = fram_new)
+```
+
+## Results for `mage_1`
+
+```{r}
+#| echo: true
+tidy(mage_1) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+tidy(mage_1, exponentiate = TRUE) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+## Stage 2. Split the data into training/test samples.
+
+```{r}
+#| echo: true
+set.seed(2022432)
+
+fram_splits <- 
+    initial_split(fram_new, prop = 3/4, strata = chd10_f)
+
+fram_train <- training(fram_splits)
+fram_test <- testing(fram_splits)
+```
+
+### Did the stratification work?
+
+```{r}
+#| echo: true
+fram_train |> tabyl(chd10_f)
+fram_test |> tabyl(chd10_f)
+```
+
+## Stage 3. Build a recipe for our model.
+
+```{r}
+#| echo: true
+fram_rec <- 
+    recipe(chd10_f ~ age + cigs + educ + hrate + 
+               sbp + stroke, data = fram_new) |>
+    step_impute_bag(all_predictors()) |>
+    step_dummy(all_nominal(), -all_outcomes()) |>
+    step_normalize(all_predictors())
+```
+
+1. Specify the roles for the outcome and the predictors.
+2. Use bagged trees to impute missing values in predictors.
+3. Form dummy variables to represent all categorical variables.
+    - Forgetting the `-all_outcomes()` wasted a half hour of my life, so learn from my mistake.
+4. Normalize (subtract mean and divide by SD) all quantitative predictors.
+
+## Stage 4. Specify engines for our fit(s).
+
+```{r}
+#| echo: true
+fram_glm_model <- 
+    logistic_reg() |> 
+    set_engine("glm")
+
+prior_dist <- rstanarm::normal(0, 3)
+
+fram_stan_model <- logistic_reg() |>
+    set_engine("stan",
+               prior_intercept = prior_dist,
+               prior = prior_dist)
+```
+
+## Working with `rstanarm`
+
+- I recommend How To Use the `rstanarm` Package at <http://mc-stan.org/rstanarm/articles/rstanarm.html>
+- `rstanarm` models have default prior distributions for their parameters. These are discussed at <http://mc-stan.org/rstanarm/articles/priors.html>
+
+In general, the default priors are *weakly informative* rather than flat. They are designed to help stabilize computation.
+
+## Stage 5. Create a workflow and fit model(s).
+
+```{r}
+#| echo: true
+fram_glm_wf <- workflow() |>
+    add_model(fram_glm_model) |>
+    add_recipe(fram_rec)
+
+fram_stan_wf <- workflow() |>
+    add_model(fram_stan_model) |>
+    add_recipe(fram_rec)
+```
+
+Ready to fit the models?
+
+## Fit the `glm` and `stan` models
+
+```{r}
+#| echo: true
+fit_A <- fit(fram_glm_wf, fram_train)
+
+set.seed(432)
+fit_B <- fit(fram_stan_wf, fram_train)
+```
+
+## Produce tidied coefficients (log odds scale)
+
+```{r}
+#| echo: true
+A_tidy <- tidy(fit_A, conf.int = T) |>
+    mutate(modname = "glm")
+
+B_tidy <- broom.mixed::tidy(fit_B, conf.int = T) |>
+    mutate(modname = "stan")
+
+coefs_comp <- bind_rows(A_tidy, B_tidy)
+```
+
+That's set us up for some plotting.
+
+## Stage 6. Compare fit coefficients.
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(coefs_comp, aes(x = term, y = estimate, col = modname,
+                       ymin = conf.low, ymax = conf.high)) +
+  geom_point(position = position_dodge2(width = 0.4)) +
+  geom_pointrange(position = position_dodge2(width = 0.4)) +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  coord_flip() +
+  labs(x = "", 
+       y = "Estimate (with 95% CI) on log odds scale",
+    title = "Comparing the coefficients")
+```
+
+## Can we compare coefficients as odds ratios?
+
+```{r}
+#| echo: true
+A_odds <- A_tidy |> 
+    mutate(odds = exp(estimate),
+           odds_low = exp(conf.low),
+           odds_high = exp(conf.high)) |>
+    filter(term != "(Intercept)") |>
+    select(modname, term, odds, odds_low, odds_high)
+
+head(A_odds, 2)
+```
+
+Then repeat to create `B_odds` (see next slide)
+
+## Creating `B_odds`
+
+```{r}
+#| echo: true
+B_odds <- B_tidy |> 
+    mutate(odds = exp(estimate),
+           odds_low = exp(conf.low),
+           odds_high = exp(conf.high)) |>
+    filter(term != "(Intercept)") |>
+    select(modname, term, odds, odds_low, odds_high)
+```
+
+## Combined Results (Odds Ratios)
+
+```{r}
+#| echo: true
+#| output-location: slide
+
+odds_comp <- bind_rows(A_odds, B_odds)
+
+ggplot(odds_comp, aes(x = term, y = odds, col = modname,
+                  ymin = odds_low, ymax = odds_high)) +
+  geom_point(position = position_dodge2(width = 0.4)) +
+  geom_pointrange(position = position_dodge2(width = 0.4)) +
+  geom_hline(yintercept = 1, lty = "dashed") +
+  coord_flip() +
+  labs(x = "", y = "Odds Ratio estimate (with 95% CI)",
+    title = "Comparing Coefficients as Odds Ratios")
+```
+
+## Stage 7. Assess training sample performance.
+
+1. We'll make predictions for the training sample using each model, and use them to find the C statistic and plot the ROC curve.
+2. We'll show some other summaries of performance in the training sample.
+
+## Make Predictions with `fit_A`
+
+We'll start by using the `glm` model `fit_A` to make predictions.
+
+```{r}
+#| echo: true
+glm_probs <- 
+    predict(fit_A, fram_train, type = "prob") |>
+    bind_cols(fram_train |> select(chd10_f))
+
+head(glm_probs, 4)
+```
+
+## Obtain C statistic for `fit_A`
+
+Next, we'll use `roc_auc` from `yardstick`. This assumes that the first level of `chd10_f` is the thing we're trying to predict. Is that true in our case?
+
+```{r}
+#| echo: true
+fram_train |> tabyl(chd10_f)
+```
+
+## Do we want to predict the first level of `chd_f`?
+
+No. We want to predict the second level: `chd`. So we need to switch the `event_level` to "second", like this.
+
+```{r}
+#| echo: true
+glm_probs |> roc_auc(chd10_f, .pred_chd, 
+                      event_level = "second") |>
+    gt() |> fmt_number(decimals = 5) |> tab_options(table.font.size = 20)
+```
+
+## Can we plot the ROC curve for `fit_A`?
+
+```{r}
+#| echo: true
+#| fig-height: 3.5
+glm_roc <- glm_probs |>
+    roc_curve(chd10_f, .pred_chd, event_level = "second")
+autoplot(glm_roc)
+```
+
+- We saw on the prior slide that our C statistic for the `glm` fit is 0.719.
+
+## Make Predictions with `fit_B`
+
+We'll use the `stan` model `fit_B` to make predictions.
+
+```{r}
+#| echo: true
+stan_probs <- 
+    predict(fit_B, fram_train, type = "prob") |>
+    bind_cols(fram_train |> select(chd10_f))
+```
+
+Now, we'll obtain the C statistic for `fit_B`
+
+```{r}
+#| echo: true
+
+stan_probs |> 
+    roc_auc(chd10_f, .pred_chd, 
+                      event_level = "second") |>
+    gt() |> fmt_number(decimals = 5) |> tab_options(table.font.size = 20)
+```
+
+## Plotting the ROC curve for `fit_B`?
+
+```{r}
+#| echo: true
+#| fig-height: 3.5
+stan_roc <- stan_probs |>
+    roc_curve(chd10_f, .pred_chd, event_level = "second")
+autoplot(stan_roc)
+```
+
+- Our C statistic for the `stan` fit is also 0.719.
+
+## Other available summaries from `yardstick`
+
+For a logistic regression where we're willing to specify a decision rule, we can consider:
+
+- `Conf_mat` which produces a confusion matrix if we specify a decision rule.
+    - There is a way to tidy a confusion matrix, summarize it with `summary()` and autoplot it with either a mosaic or a heatmap.
+
+## Other `yardstick` summaries
+
+- `accuracy` = proportion of the data that are predicted correctly
+- `kap` is very similar to `accuracy` but is normalized by the accuracy that would be expected by chance alone and is most useful when one or more classes dominate the distribution - attributed to Cohen (1960)
+- `sens` = sensitivity and `spec` specificity
+- `ppv` positive predictive value and `npv` negative predictive value
+
+## Establishing a decision rule for the `glm` fit
+
+Let's use `.pred_chd > 0.2` for now to indicate a prediction of `chd`.
+
+```{r}
+#| echo: true
+glm_probs <- 
+    predict(fit_A, fram_train, type = "prob") |>
+    bind_cols(fram_train |> select(chd10_f)) |>
+    mutate(chd10_pre = 
+               ifelse(.pred_chd > 0.2, "chd", "chd_no")) |>
+    mutate(chd10_pre = fct_relevel(factor(chd10_pre),
+                                   "chd_no"))
+
+glm_probs |> tabyl(chd10_pre, chd10_f)
+```
+
+## Why didn't I use `.pred_chd > 0.5`?
+
+```{r}
+#| echo: true
+glm_probs5 <- 
+    predict(fit_A, fram_train, type = "prob") |>
+    bind_cols(fram_train |> select(chd10_f)) |>
+    mutate(chd10_pre = 
+               ifelse(.pred_chd > 0.5, "chd", "chd_no")) |>
+    mutate(chd10_pre = fct_relevel(factor(chd10_pre),
+                                   "chd_no"))
+
+glm_probs5 |> tabyl(chd10_pre)
+```
+
+
+## What can we run now?
+
+```{r}
+#| echo: true
+conf_mat(glm_probs, truth = chd10_f, estimate = chd10_pre)
+metrics(glm_probs, truth = chd10_f, estimate = chd10_pre)
+```
+
+## Plot confusion matrix for `glm` fit?
+
+```{r}
+#| echo: true
+#| fig-height: 4.5
+conf_mat(glm_probs, 
+         truth = chd10_f, estimate = chd10_pre) |> 
+    autoplot(type = "heatmap")
+```
+
+## More Confusion Matrix Summaries?
+
+Other available metrics include:
+
+- sensitivity, specificity, positive predictive value, negative predictive value, and the statistics below.
+
+```{r}
+#| echo: true
+conf_mat(glm_probs, truth = chd10_f, estimate = chd10_pre) |> 
+    summary() |> slice(7:13)
+```
+
+## Establishing a decision rule for the `stan` fit
+
+Let's also use `.pred_chd > 0.2` to indicate a prediction of `chd`.
+
+```{r}
+#| echo: true
+stan_probs <- 
+    predict(fit_B, fram_train, type = "prob") |>
+    bind_cols(fram_train |> select(chd10_f)) |>
+    mutate(chd10_pre = 
+               ifelse(.pred_chd > 0.2, "chd", "chd_no")) |>
+    mutate(chd10_pre = fct_relevel(factor(chd10_pre),
+                                   "chd_no"))
+```
+
+## Confusion Matrix and Basic Metrics
+
+```{r}
+#| echo: true
+conf_mat(stan_probs, truth = chd10_f, estimate = chd10_pre)
+metrics(stan_probs, truth = chd10_f, estimate = chd10_pre)
+```
+
+## Plot a confusion matrix for `stan` fit
+
+```{r}
+#| echo: true
+#| fig-height: 4.5
+conf_mat(stan_probs, 
+         truth = chd10_f, estimate = chd10_pre) |> 
+    autoplot(type = "mosaic")
+```
+
+## More Confusion Matrix Summaries?
+
+```{r}
+#| echo: true
+#| fig-height: 4.5
+conf_mat(stan_probs, 
+         truth = chd10_f, estimate = chd10_pre) |> 
+    summary()
+```
+
+## Stage 8. Assess test sample performance.
+
+```{r}
+#| echo: true
+glm_test <- 
+    predict(fit_A, fram_test, type = "prob") |>
+    bind_cols(fram_test |> select(chd10_f))
+
+stan_test <- 
+    predict(fit_B, fram_test, type = "prob") |>
+    bind_cols(fram_test |> select(chd10_f))
+```
+
+## Test Sample C statistic comparison?
+
+```{r}
+#| echo: true
+glm_test |> roc_auc(chd10_f, .pred_chd, 
+                     event_level = "second") |>
+    gt() |> fmt_number(decimals = 4) |> tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+stan_test |> roc_auc(chd10_f, .pred_chd, 
+                     event_level = "second") |>
+    gt() |> fmt_number(decimals = 4) |> tab_options(table.font.size = 20)
+```
+
+## What's Next?
+
+A little bit of K-Means Clustering and Principal Components Analysis
