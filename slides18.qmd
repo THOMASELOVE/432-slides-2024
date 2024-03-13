@@ -1,0 +1,662 @@
+---
+title: "432 Class 18"
+author: Thomas E. Love, Ph.D.
+date: "2024-03-21"
+format:
+  revealjs: 
+    theme: dark
+    embed-resources: true
+    self-contained: true
+    slide-number: true
+    footnotes-hover: true
+    preview-links: auto
+    date-format: iso
+    logo: 432-2024-pic.png
+    footer: "432 Class 18 | 2024-03-21 | <https://thomaselove.github.io/432-2024/>"
+---
+
+
+## Today's Topics
+
+1. Project B Instructions
+2. Asbestos Exposure in the US Navy: A new example predicting an ordered multi-categorical outcome
+    - Proportional Odds Logistic Regression Models
+        - with `MASS::polr()` 
+        - with `rms::lrm()`
+    - Fitting Ordinal Logistic Regressions with `rms::orm()`
+
+Chapter 27 of the Course Notes describes this material.
+
+## Setup
+
+```{r}
+#| echo: true
+
+knitr::opts_chunk$set(comment=NA)
+options(width = 80)
+
+library(janitor); library(broom); library(gt)
+library(mosaic) ## but just for favstats
+
+library(nnet)
+library(MASS)
+
+library(conflicted)
+
+library(rms)
+library(tidyverse)
+
+conflicts_prefer(dplyr::filter, dplyr::select, dplyr::summarize, dplyr::count)
+
+theme_set(theme_bw())
+```
+
+# Project B instructions
+
+## Project B deadlines {.smaller}
+
+Everything is found at <https://thomaselove.github.io/432-2024/projB.html>.
+
+In project B, you will create two research questions that can be addressed with data you can conveniently obtain that can be used to address each of your questions, with models that you learned in the 431-432 sequence. You will fit one regression model for each research question.
+
+- Each of your models must include 2-8 predictors.
+- Each model must include at least one predictor that is not included in the other model.
+- Each model will need to describe observations from the same pool of "subjects", so that a single tibble services the whole Project.
+
+## Your Two Models {.smaller}
+
+The model for your first outcome must be either:
+
+- A model for a multi-categorical outcome
+- A model for a count outcome, or
+- A Cox model for a time-to-event outcome with censoring
+
+The model for your second outcome must use a different approach than you used for Outcome 1. For this model, you can use any of the three options above, or you may use:
+
+- A linear or binary logistic model fit using a Bayesian engine, or
+- A weighted linear regression model.
+
+## Deliverables 
+
+1. A Proposal Form to be submitted no later than noon on Wednesday 2024-04-10. (details on next three slides.)
+
+2. An in-person or Zoom Presentation
+    - April 30 and May 1 are CWRU Reading Days and May 2 is when CWRU final exams begin. Our last 432 class is Thursday 2024-04-25.
+
+3. A Portfolio developed with Quarto (along with some data) submitted to Canvas by noon on Tuesday 2024-05-07.
+
+## Project B Proposal Form
+
+Now open at <https://bit.ly/432-2024-projectB-proposal-form>
+
+The form allows you to:
+
+- register a brief description of your project for our approval
+- specify presentation times when you (and your partner if applicable) are available.
+
+Please read the instructions at <https://thomaselove.github.io/432-2024/projB.html> before you submit the form.
+
+## Information the form requires {.smaller}
+
+- You’ll need to assert that you have already successfully ingested the data into R.
+- You’ll need to tell us the two types of models you plan to fit.
+- You’ll need to describe the variables you intend to use as outcomes in your models.
+    - These two outcomes need to be clearly linked to your research questions, and you’ll need to tell us something about each of their distributions.
+- You’ll need to specify how many cases are in your data with complete data on each of your study’s two outcomes.
+- You’ll need to specify the title of your project.
+- You’ll need to specify your research questions.
+- You’ll need to specify who your partner is, if you have one.
+
+## Signing Up for Presentation Times {.smaller}
+
+Project B Presentations will be held on…
+
+- Tuesday 2024-04-30 (CWRU Reading Day) between 8 AM and Noon and between 1 and 6 PM, either in person or via Zoom
+- Wednesday 2024-05-01 (CWRU Reading Day) between Noon and 7 PM via Zoom
+- Thursday 2024-05-02 (Final Exams Begin) between 1 and 6 PM via Zoom
+
+You will specify at least five one-hour time slots within these windows (using at least two different days) as times when you (and your partner, if any) are available to give your project.
+
+Some people will have special circumstances that make it difficult for them to meet during some of these times. There is an opportunity on the form for you to provide those details to Professor Love.
+
+# POLR and Ordinal Regression Models
+
+## Asbestos exposure in the U.S. Navy
+
+These data describe 83 Navy workers^[Simonoff JS (2003) *Analyzing Categorical Data*. Chapter 10.], engaged in jobs involving potential asbestos exposure. 
+
+- The workers were either removing asbestos tile or asbestos insulation, and we might reasonably expect that those exposures would be different. 
+- We'd expect more exposure with insulation removal.
+
+## Asbestos exposure in the U.S. Navy
+
+Data describe 83 Navy workers^[Simonoff JS (2003) *Analyzing Categorical Data*. Chapter 10.] with potential asbestos exposure..
+
+- The workers either worked with general ventilation (like a fan or naturally occurring wind) or negative pressure (where a pump with a High Efficiency Particulate Air filter is used to draw air (and fibers) from the work area.)
+- We'd expect more exposure with general ventilation.
+
+## Asbestos exposure in the U.S. Navy
+
+83 Navy workers^[Simonoff JS (2003) *Analyzing Categorical Data*. Chapter 10.] with potential asbestos exposure...
+
+- The duration of a sampling period (in minutes) was recorded, and their asbestos exposure was classified as: 
+    + low exposure (< 0.05 fibers per cubic centimeter), 
+    + action level (between 0.05 and 0.1) and 
+    + above the legal limit (more than 0.1 fibers per cc).
+- Sampling periods ranged from 30 to 300 minutes.
+
+## Ingest and clean `asbestos` data
+
+```{r}
+#| echo: true
+
+asbestos <- read_csv("c18/data/asbestos.csv", show_col_types = FALSE) |>
+  clean_names() |>
+  mutate(across(where(is_character), as_factor),
+      exposure = fct_relevel(exposure, "1_Low", "2_Action", "3_AboveLimit"),
+      exposure = factor(exposure, ordered = TRUE),
+      worker = as.character(worker))
+
+summary(asbestos |> select(-worker))
+```
+
+## Our Outcome and Modeling task
+
+- `exposure` is determined by taking air samples in a circle of diameter 2.5 feet around the worker's mouth and nose.
+
+Our planned predictors for `exposure` are: 
+
+- `task` (Tile or Insulation), 
+- `ventilation` (Negative Pressure (NP) or General), and 
+- `duration` (in minutes). 
+
+## Effects of Task and Ventilation
+
+We anticipated greater exposure with Insulation, rather than Tile, and with General ventilation vs. Negative Pressure.
+
+```{r}
+#| echo: true
+asbestos |> tabyl(task, exposure) |> 
+  gt() |> tab_options(table.font.size = 20)
+
+asbestos |> tabyl(ventilation, exposure) |> 
+  gt() |> tab_options(table.font.size = 20)
+```
+
+## Exposure and Duration
+
+Is there a strong relationship of exposure and duration?
+
+```{r}
+#| echo: true
+favstats(duration ~ exposure, data = asbestos) |>
+  gt() |> fmt_number(columns = mean:sd, decimals = 2) |>
+  tab_options(table.font.size = 20)
+```
+
+```{r}
+#| echo: true
+#| output-location: slide
+ggplot(asbestos, aes(x = exposure, y = duration)) +
+  geom_violin() +
+  geom_boxplot(aes(fill = exposure), width = 0.3) +
+  guides(fill = "none") +
+  scale_fill_brewer(type = "seq", palette = "Oranges") +
+  labs(y = "duration in seconds", x = "exposure category")
+```
+
+# Fitting `polr` models with the ` MASS::polr` function
+
+## Proportional-Odds Cumulative Logit
+
+We'll use the `polr` function in the **MASS** package.
+
+- Clearly, exposure group (3) Above legal limit, is worst, followed by group (2) Action level, and then group (1) Low exposure.
+- We'll have two binary (1/0) predictors (one for task and one for ventilation) and one quantitative predictor (for duration). 
+
+## Equations to be Fit
+
+- The model will have two logit equations: one comparing group (1) to group (2) and one comparing group (2) to group (3), and three slopes, for a total of five free parameters. 
+
+$$
+log(\frac{Pr(exposure \leq 1)}{Pr(exposure > 1)}) = \beta_{0[1]} + \beta_1 task + \beta_2 vent. + \beta_3 duration
+$$
+
+and
+
+$$
+log(\frac{Pr(exposure \leq 2)}{Pr(exposure > 2)}) = \beta_{0[2]} + \beta_1 task + \beta_2 vent. + \beta_3 duration
+$$
+
+## Model Equations
+
+Note that the intercept term is the only piece that varies across the two equations shown in the previous slide.
+
+- A positive coefficient $\beta$ means that increasing the value of that predictor tends to *lower* the exposure category, and thus *reduce* the asbestos exposure.
+
+### Fitting the Model 
+
+```{r}
+#| echo: true
+modelA <- polr(exposure ~ task + ventilation + duration, 
+                data=asbestos, Hess = TRUE)
+```
+
+## Model Summary
+
+```{r}
+#| echo: true
+summary(modelA)
+```
+
+## Direction of Model Effects
+
+Here are coefficient estimates for the three predictors. 
+
+```{r}
+#| echo: true
+tidy(modelA) |> filter(coef.type == "coefficient") |>
+  gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+
+- The estimated slope for task = Insulation is 2.25. 
+  - Since the slope is positive, `task` = Insulation produces a *reduced* `exposure` level compared to `task` = Tile when `ventilation` and `duration` are held constant. 
+
+## Effect of Task via Odds Ratio + CI
+
+```{r}
+#| echo: true
+tidy(modelA, exponentiate = TRUE, conf.int = TRUE) |>
+  filter(coef.type == "coefficient") |>
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- Assuming `ventilation` and `duration` remain constant, suppose Al has `task` = Insulation and Bob has `task` = Tile.
+- `modelA`: Odds of reduced `exposure` are 9.5 (95% CI 2.8 to 36.8) times as large for Al as they are for Bob.
+
+## Ventilation Effect
+
+```{r}
+#| echo: true
+tidy(modelA, exponentiate = TRUE, conf.int = TRUE) |>
+  filter(coef.type == "coefficient") |>
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- Assuming `task` and `duration` remain constant, `modelA` suggests the odds of reduced `exposure` are 8.65 (95% CI 2.9, 27.5) times as large when using General ventilation.
+- Impact of `duration` appears quite small: odds ratio is essentially 1, with 95% CI (0.99, 1.01).
+
+## `modelA`: Equation 1
+
+```{r}
+#| echo: true
+tidy(modelA) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- 2.35 is the estimated log odds of falling into category (1) low exposure versus all other categories, when all other predictors (task, ventilation and duration) are zero. 
+
+## `modelA`: Equation 2
+
+```{r}
+#| echo: true
+tidy(modelA) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+- 2.90 is the estimated log odds of falling into category (1) or (2) versus category (3), when all other predictors (task, ventilation and duration) are zero. 
+
+## `modelA` First Equation
+
+```{r}
+#| echo: true
+tidy(modelA) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+$$
+log(\frac{Pr(exposure \leq 1)}{Pr(exposure > 1)}) = 
+$$
+
+$$
+2.35 + 2.25 [task=Ins.] + 2.16 [vent=General] - 0.001 duration
+$$
+
+## `modelA` Second Equation
+
+```{r}
+#| echo: true
+tidy(modelA) |> 
+  gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
+```
+
+$$
+log(\frac{Pr(exposure \leq 2)}{Pr(exposure > 2)}) = 
+$$
+
+$$
+2.90 + 2.25 [task=Ins.] + 2.16 [vent=General] - 0.001 duration
+$$
+
+# Comparing `polr` models
+
+## `modelA` vs. "Intercept only" model
+
+```{r}
+#| echo: true
+model.1 <- polr(exposure ~ 1, data=asbestos)
+anova(model.1, modelA) |> 
+  gt() |> tab_options(table.font.size = 20)
+```
+
+### Can we compare AIC and BIC?
+
+```{r}
+#| echo: true
+AIC(model.1, modelA)
+BIC(model.1, modelA)
+```
+
+## `modelA` vs. "No duration" Model
+
+Compare to a model with just Task and Ventilation
+
+```{r}
+#| echo: true
+modelTV <- polr(exposure ~ task + ventilation, data=asbestos)
+anova(modelA, modelTV) |> 
+  gt() |> tab_options(table.font.size = 20)
+AIC(modelA, modelTV)
+BIC(modelA, modelTV)
+```
+
+## task*ventilation interaction?
+
+```{r}
+#| echo: true
+
+model.TxV <- polr(exposure ~ task * ventilation, data=asbestos)
+anova(modelTV, model.TxV) |> 
+  gt() |> tab_options(table.font.size = 20)
+AIC(modelTV, model.TxV)
+BIC(modelTV, model.TxV)
+```
+
+## Fitting all of the models?
+
+Well, not all of the models, but the interesting ones?
+
+```{r}
+#| echo: true
+
+m1 <- polr(exposure ~ 1, data = asbestos)
+m2 <- polr(exposure ~ duration, data = asbestos)
+m3 <- polr(exposure ~ task, data = asbestos)
+m4 <- polr(exposure ~ ventilation, data = asbestos)
+m5 <- polr(exposure ~ task + ventilation, data = asbestos)
+m6 <- polr(exposure ~ task * ventilation, data = asbestos)
+m7 <- polr(exposure ~ task + ventilation + duration, data = asbestos)
+
+anova(m2, m1)
+```
+
+## `asbestos` Likelihood Ratio Tests
+
+Model | Elements | DF | Deviance | Test | *p*
+:---: | :-----: | ---: | ---: | ---: | ---:
+1 | Intercept | 81 |  147.62 | -- | --
+2 | Duration | 80 | 142.29 | vs 1 | 0.021
+3 | Task | 80 | 115.36 | vs 1 | < 0.0001
+4 | Ventilation | 80 | 115.45 | vs 1 | < 0.0001
+5 | T+V | 79 | 99.91 | vs 3 | < 0.0001
+6 | T*V | 78 | 99.64 | vs 5 | 0.603
+7 | T+V+D | 78 | 99.88 | vs 5 | 0.852
+
+## Predictions with our `T+V` model
+
+```{r}
+#| echo: true
+
+modelTV <- polr(exposure ~ task + ventilation, data=asbestos)
+asbestos <- asbestos |> mutate(TV_preds = predict(modelTV))
+asbestos |> tabyl(TV_preds, exposure) |> adorn_title()
+```
+
+- Predicting Low exposure led to 42 right and 13 wrong.
+- We never predicted Action Level
+- Predicting Above Legal Limit led to 22 right and 6 wrong.
+
+Total: 64 right, 19 wrong. Accuracy = 64/83 = 77.1%
+
+## Proportional odds assumption reasonable?
+
+Alternative: fit a multinomial model?
+
+```{r}
+#| echo: true
+
+mult_TV <- multinom(exposure ~ task + ventilation, 
+                       data = asbestos, trace = FALSE)
+mult_TV
+```
+
+## Multinomial `T+V` model predicts...
+
+```{r}
+#| echo: true
+
+asbestos <- asbestos |> 
+  mutate(TVmult_preds = predict(mult_TV))
+asbestos |> tabyl(TVmult_preds, exposure) |> adorn_title() 
+```
+
+- Exactly the same predictions as our `polr` model.
+
+```{r}
+#| echo: true
+asbestos |> count(TVmult_preds, TV_preds)
+```
+
+
+
+## Compare Models with Likelihood Ratio Test?
+
+```{r}
+#| echo: true
+
+(LL_multTV <- logLik(mult_TV)) # multinomial model: 6 df
+(LL_polrTV <- logLik(modelTV)) # polr model: 4 df
+
+(G = -2 * (LL_polrTV[1] - LL_multTV[1]))
+
+pchisq(G, 2, lower.tail = FALSE)
+
+```
+
+*p* = 0.4 testing the difference in goodness of fit between the proportional odds model and the more complex multinomial logistic regression model.
+
+## AIC and BIC for multinomial vs. polr models
+
+```{r}
+#| echo: true
+
+AIC(mult_TV, modelTV)
+BIC(mult_TV, modelTV)
+```
+
+- `mult_TV` is the multinomial model
+- `modelTV` is the polr model
+
+# Using `rms` to fit the POLR model via `lrm()`
+
+## Proportional Odds Ordinal Logistic Regression with `lrm()`
+
+```{r}
+#| echo: true
+
+d <- datadist(asbestos)
+options(datadist = "d")
+
+# note that exposure must be an ordered factor
+
+model_TV_LRM <- lrm(exposure ~ task + ventilation,
+                 data = asbestos, x = TRUE, y = TRUE)
+```
+
+## The `lrm()` fit
+
+```{r}
+model_TV_LRM
+```
+
+## Effects Plot after `lrm()`
+
+```{r}
+#| echo: true
+
+plot(summary(model_TV_LRM))
+```
+
+## `lrm()` fit, plotted on log odds scale
+
+```{r}
+#| echo: true
+
+ggplot(Predict(model_TV_LRM), layout = c(1,2))
+```
+
+## `lrm()` fit, on probability scale
+
+```{r}
+#| echo: true
+
+ggplot(Predict(model_TV_LRM, fun = plogis), layout = c(1,2))
+```
+
+## `rms::validate` results from `lrm()`
+
+```{r}
+#| echo: true
+set.seed(432001)
+validate(model_TV_LRM)
+```
+
+Validated $C$ = 0.5 + (0.6964/2) = 0.8482
+
+## All possible combinations of T and V
+
+```{r}
+#| echo: true
+newdat <- data.frame(
+  worker = c("New1", "New2", "New3", "New4"),
+  task = c("Tile", "Tile", "Insulation", "Insulation"),
+  ventilation = c("NP", "General", "NP", "General")
+) |>
+  mutate(task = factor(task), 
+         ventilation = factor(ventilation))
+
+newdat ## note this is NOT a tibble
+```
+
+## Add individual predictions
+
+We use `predict()` with `type = "fitted.ind"` here.
+
+```{r}
+#| echo: true
+
+newdat_aug <- cbind(newdat, 
+      predict(model_TV_LRM, newdata = newdat, type = "fitted.ind"))
+
+newdat_aug |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Instead add fitted predictions?
+
+Using `type = "fitted"` produces greater than or equal to predictions instead.
+
+```{r}
+#| echo: true
+
+newdat_aug2 <- cbind(newdat, 
+      predict(model_TV_LRM, newdata = newdat, type = "fitted"))
+
+newdat_aug2 |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+# Ordinal Logistic Regression with `orm()` from rms
+
+## Ordinal Logistic Regression for `T+V` with `orm`
+
+```{r}
+#| echo: true
+
+d <- datadist(asbestos)
+options(datadist = "d")
+
+model_TV_ORM <- orm(exposure ~ task + ventilation,
+                 data = asbestos, x = TRUE, y = TRUE)
+
+# note that exposure must be an ordered factor
+```
+
+## `model_TV_ORM` fit with `orm`
+
+```{r}
+#| echo: true
+
+model_TV_ORM
+```
+
+## Effects Plot from `orm`
+
+```{r}
+#| echo: true
+plot(summary(model_TV_ORM))
+```
+
+## POLR model fit with `orm`, plotted
+
+```{r}
+#| echo: true
+ggplot(Predict(model_TV_ORM, fun = plogis), layout = c(1,2))
+```
+
+## `rms::validate` results from `orm`
+
+```{r}
+#| echo: true
+
+set.seed(432002)
+validate(model_TV_ORM)
+```
+
+- `rho` = Spearman's rank correlation between linear predictor and outcome
+- `R2` = Nagelkerke R-square
+
+
+## Predicting with `orm()`
+
+We can from the information below, estimate the model probability of obtaining each of the three possible results.
+
+```{r}
+#| echo: true
+newdat_aug3 <- cbind(newdat, 
+      predict(model_TV_ORM, newdata = newdat, type = "fitted"))
+
+newdat_aug2 |> gt() |> fmt_number(decimals = 3) |>
+  tab_options(table.font.size = 20)
+```
+
+## Conclusions?
+
+We can fit both POLR models and ordinal regression models with `rms` approaches, and we can also fit POLR with `MASS::polr()`. 
+
+- All are designed for *ordinal* multi-categorical outcomes.
+- Can compare results to what we would get with multinomial models, designed for *nominal* multi-categorical outcomes.
+
+We'll focus on regression for *nominal* multi-categorical outcomes next time.

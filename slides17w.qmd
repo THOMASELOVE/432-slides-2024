@@ -73,8 +73,9 @@ Variable | Description
 
 gradschool <- 
   read_csv("c17/data/gradschool.csv", show_col_types = FALSE) |>
-  type.convert(as.is = FALSE) |> clean_names() |>
-  mutate(student = as.character(student))
+  clean_names() |>
+  mutate(across(where(is_character), as_factor),
+         student = as.character(student))
 
 gradschool
 ```
