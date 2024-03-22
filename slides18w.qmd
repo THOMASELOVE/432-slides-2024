@@ -5,7 +5,6 @@ date: "2024-03-21"
 format: docx
 ---
 
-
 ## Today's Topics
 
 1. Project B Instructions
@@ -36,7 +35,9 @@ library(conflicted)
 library(rms)
 library(tidyverse)
 
-conflicts_prefer(dplyr::filter, dplyr::select, dplyr::summarize, dplyr::count)
+conflicts_prefer(dplyr::filter, dplyr::select,
+                 dplyr::summarize, dplyr::count,
+                 base::mean)
 
 theme_set(theme_bw())
 ```
@@ -218,17 +219,28 @@ $$
 log(\frac{Pr(exposure \leq 2)}{Pr(exposure > 2)}) = \beta_{0[2]} + \beta_1 task + \beta_2 vent. + \beta_3 duration
 $$
 
+## Centering `Duration`
+
+In order to make our result more interpretable, I suggest we center each of our quantitative predictors (in this case, that's just centering duration.) Recall that `mean(duration)` = 147.1 minutes in these data.
+
+```{r}
+asbestos <- asbestos |> 
+  mutate(dur_c = duration - mean(duration))
+```
+
+A value of `dur_c` = 0 thus means that we have the mean level of `duration`.
+
 ## Model Equations
 
 Note that the intercept term is the only piece that varies across the two equations shown in the previous slide.
 
-- A positive coefficient $\beta$ means that increasing the value of that predictor tends to *lower* the exposure category, and thus *reduce* the asbestos exposure.
+- A positive coefficient $\beta$ means that increasing the value of that predictor tends to *raise* the exposure category, and thus *increase* the asbestos exposure.
 
 ### Fitting the Model 
 
 ```{r}
 #| echo: true
-modelA <- polr(exposure ~ task + ventilation + duration, 
+modelA <- polr(exposure ~ task + ventilation + dur_c, 
                 data=asbestos, Hess = TRUE)
 ```
 
@@ -252,7 +264,7 @@ tidy(modelA) |> filter(coef.type == "coefficient") |>
 
 
 - The estimated slope for task = Insulation is 2.25. 
-  - Since the slope is positive, `task` = Insulation produces a *reduced* `exposure` level compared to `task` = Tile when `ventilation` and `duration` are held constant. 
+  - Since the slope is positive, `task` = Insulation produces an *increased* `exposure` level compared to `task` = Tile when `ventilation` and `duration` are held constant. 
 
 ## Effect of Task via Odds Ratio + CI
 
@@ -264,7 +276,7 @@ tidy(modelA, exponentiate = TRUE, conf.int = TRUE) |>
 ```
 
 - Assuming `ventilation` and `duration` remain constant, suppose Al has `task` = Insulation and Bob has `task` = Tile.
-- `modelA`: Odds of reduced `exposure` are 9.5 (95% CI 2.8 to 36.8) times as large for Al as they are for Bob.
+- `modelA`: Odds of higher asbestos `exposure` are 9.5 (95% CI 2.8 to 36.8) times as large for Al as they are for Bob.
 
 ## Ventilation Effect
 
@@ -275,7 +287,7 @@ tidy(modelA, exponentiate = TRUE, conf.int = TRUE) |>
   gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
 ```
 
-- Assuming `task` and `duration` remain constant, `modelA` suggests the odds of reduced `exposure` are 8.65 (95% CI 2.9, 27.5) times as large when using General ventilation.
+- Assuming `task` and `duration` remain constant, `modelA` suggests the odds of higher `exposure` are 8.65 (95% CI 2.9, 27.5) times as large when using General ventilation.
 - Impact of `duration` appears quite small: odds ratio is essentially 1, with 95% CI (0.99, 1.01).
 
 ## `modelA`: Equation 1
@@ -286,7 +298,7 @@ tidy(modelA) |>
   gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
 ```
 
-- 2.35 is the estimated log odds of falling into category (1) low exposure versus all other categories, when all other predictors (task, ventilation and duration) are zero. 
+- 2.455 is the estimated log odds of falling into category (1) low exposure versus all other categories, when all other predictors (task, ventilation and centered duration) are zero. 
 
 ## `modelA`: Equation 2
 
@@ -296,7 +308,7 @@ tidy(modelA) |>
   gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
 ```
 
-- 2.90 is the estimated log odds of falling into category (1) or (2) versus category (3), when all other predictors (task, ventilation and duration) are zero. 
+- 2.897 is the estimated log odds of falling into category (1) or (2) versus category (3), when all other predictors (task, ventilation and centered duration) are zero. 
 
 ## `modelA` First Equation
 
@@ -382,12 +394,12 @@ Well, not all of the models, but the interesting ones?
 #| echo: true
 
 m1 <- polr(exposure ~ 1, data = asbestos)
-m2 <- polr(exposure ~ duration, data = asbestos)
+m2 <- polr(exposure ~ dur_c, data = asbestos)
 m3 <- polr(exposure ~ task, data = asbestos)
 m4 <- polr(exposure ~ ventilation, data = asbestos)
 m5 <- polr(exposure ~ task + ventilation, data = asbestos)
 m6 <- polr(exposure ~ task * ventilation, data = asbestos)
-m7 <- polr(exposure ~ task + ventilation + duration, data = asbestos)
+m7 <- polr(exposure ~ task + ventilation + dur_c, data = asbestos)
 
 anova(m2, m1)
 ```
@@ -579,6 +591,12 @@ newdat_aug2 |> gt() |> fmt_number(decimals = 3) |>
 ```
 
 # Ordinal Logistic Regression with `orm()` from rms
+
+## What is the difference?
+
+- In fitting an `orm()` vs. `lrm()`, just using the letter "o" instead of "l".
+- The `orm()` model: appropriate when we are interested in studying the rank correlation between the predictions and the outcomes - in essence, we are interested in "penalizing" more for being two categories away from correct than being one category away from correct.
+- The `lrm()` or `polr()` model: appropriate when we are interested in "penalizing" all incorrect predictions the same way.
 
 ## Ordinal Logistic Regression for `T+V` with `orm`
 
