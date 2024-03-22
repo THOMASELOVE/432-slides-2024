@@ -1,5 +1,5 @@
 ---
-title: "432 Class 18"
+title: "432 Class 18 (Updated after class)"
 author: Thomas E. Love, Ph.D.
 date: "2024-03-21"
 format:
@@ -77,6 +77,8 @@ The model for your second outcome must use a different approach than you used fo
 
 - A linear or binary logistic model fit using a Bayesian engine, or
 - A weighted linear regression model.
+
+**Note**: I may add some additional options here.
 
 ## Deliverables 
 
@@ -235,6 +237,7 @@ $$
 In order to make our result more interpretable, I suggest we center each of our quantitative predictors (in this case, that's just centering duration.) Recall that `mean(duration)` = 147.1 minutes in these data.
 
 ```{r}
+#| echo: true
 asbestos <- asbestos |> 
   mutate(dur_c = duration - mean(duration))
 ```
@@ -521,6 +524,7 @@ model_TV_LRM <- lrm(exposure ~ task + ventilation,
 ## The `lrm()` fit
 
 ```{r}
+#| echo: true
 model_TV_LRM
 ```
 
@@ -603,7 +607,7 @@ newdat_aug2 |> gt() |> fmt_number(decimals = 3) |>
 
 # Ordinal Logistic Regression with `orm()` from rms
 
-## What is the difference?
+## Difference between `orm()` and `lrm()`?
 
 - In fitting an `orm()` vs. `lrm()`, just using the letter "o" instead of "l".
 - The `orm()` model: appropriate when we are interested in studying the rank correlation between the predictions and the outcomes - in essence, we are interested in "penalizing" more for being two categories away from correct than being one category away from correct.
