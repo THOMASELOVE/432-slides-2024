@@ -322,7 +322,7 @@ tidy(modelA) |>
   gt() |> fmt_number(decimals = 3) |> tab_options(table.font.size = 20)
 ```
 
-- 2.897 is the estimated log odds of falling into category (1) or (2) versus category (3), when all other predictors (task, ventilation and centered duration) are zero. 
+- 3.001 is the estimated log odds of falling into category (1) or (2) versus category (3), when all other predictors (task, ventilation and centered duration) are zero. 
 
 ## `modelA` First Equation
 
@@ -337,7 +337,7 @@ log(\frac{Pr(exposure \leq 1)}{Pr(exposure > 1)}) =
 $$
 
 $$
-2.35 + 2.25 [task=Ins.] + 2.16 [vent=General] - 0.001 duration
+2.46 + 2.25 [task=Ins.] + 2.16 [vent=General] - 0.001 dur_c
 $$
 
 ## `modelA` Second Equation
@@ -353,7 +353,7 @@ log(\frac{Pr(exposure \leq 2)}{Pr(exposure > 2)}) =
 $$
 
 $$
-2.90 + 2.25 [task=Ins.] + 2.16 [vent=General] - 0.001 duration
+3.00 + 2.25 [task=Ins.] + 2.16 [vent=General] - 0.001 dur_c
 $$
 
 # Comparing `polr` models
@@ -607,7 +607,7 @@ newdat_aug2 |> gt() |> fmt_number(decimals = 3) |>
 
 # Ordinal Logistic Regression with `orm()` from rms
 
-## Difference between `orm()` and `lrm()`?
+## `orm()` vs. `lrm()` differences?
 
 - In fitting an `orm()` vs. `lrm()`, just using the letter "o" instead of "l".
 - The `orm()` model: appropriate when we are interested in studying the rank correlation between the predictions and the outcomes - in essence, we are interested in "penalizing" more for being two categories away from correct than being one category away from correct.
