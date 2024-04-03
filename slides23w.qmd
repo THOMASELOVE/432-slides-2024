@@ -592,7 +592,7 @@ stan_res_test <-
     mets(stan_pred_test, truth = ldl_pch, estimate = .pred)
 ```
 
-## `fit1` and `fit2` (training sample)
+## `fit1` and `fit2` (test sample)
 
 ```{r}
 #| echo: true
