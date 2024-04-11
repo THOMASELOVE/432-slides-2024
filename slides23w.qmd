@@ -6,7 +6,7 @@ format: docx
 ---
 
 
-## Today's Topic
+## Today's Topics
 
 The tidymodels framework
 
@@ -15,6 +15,8 @@ The tidymodels framework
     - Model building (with multiple fitting engines)
     - Measuring model effectiveness
     - Creating a model workflow
+
+Then, an example of a Bayesian linear model fit without `tidymodels` (see Course Notes chapter 33).
 
 ## Setup
 
@@ -613,4 +615,141 @@ stan_res_test |> gt() |>
 ### Next Time
 
 We'll apply ideas from the `tidymodels` framework to fit a logistic regression model.
+
+# Building and Evaluating a Bayesian Fit without `tidymodels`
+
+## Packages We'll Use Here
+
+These are specific to the Bayes stuff I'll discuss here.
+
+```{r}
+#| echo: true
+#| message: false
+
+library(bayestestR)
+library(insight)
+library(rstanarm)
+library(mosaic) # just for favstats here
+```
+
+See Chapter 33 of the Course Notes.
+
+## Data and Bayesian Linear Model
+
+We'll use the `hers_new` tibble in a complete case analysis, and fit a model to predict `ldl_pch` using `age`, `ht`, `ldl` and `globrat`.
+
+```{r}
+#| echo: true
+#| message: false
+favstats(~ ldl_pch, data = hers_new) |> gt() |>
+  fmt_number(min:sd, decimals = 2)
+```
+
+### Fitting a Bayesian Linear Model
+
+```{r}
+#| echo: true
+set.seed(43223)
+m1 <- stan_glm(ldl_pch ~ age + ht + ldl + globrat, 
+               data = hers_new, refresh = 0)
+```
+
+## Results, 1
+
+```{r}
+#| echo: true
+m1
+```
+
+## Results, 2
+
+```{r}
+#| echo: true
+summary(m1)
+```
+
+## Extract the posterior
+
+```{r}
+#| echo: true
+posts <- get_parameters(m1)
+
+nrow(posts) # how many simulations of posterior?
+head(posts)
+```
+
+## Visualize posterior of `age` effect
+
+```{r}
+#| echo: true
+ggplot(posts, aes(x = age)) + geom_density(fill = "dodgerblue")
+```
+
+## Distribution of `ht` effect
+
+```{r}
+#| echo: true
+ggplot(posts, aes(x = htplacebo)) + geom_density(fill = "dodgerblue")
+```
+
+## Distribution of baseline `ldl` effect
+
+```{r}
+#| echo: true
+ggplot(posts, aes(x = ldl)) + geom_density(fill = "dodgerblue")
+```
+
+## `globrat` effect (fair vs. excellent)
+
+```{r}
+#| echo: true
+ggplot(posts, aes(x = globratfair)) + geom_density(fill = "dodgerblue")
+```
+
+## Coefficients and Credible Intervals
+
+```{r}
+#| echo: true
+
+plot(m1, prob = 0.5, prob_outer = 0.95)
+```
+
+## Summarizing Posterior Distribution
+
+```{r}
+#| echo: true
+describe_posterior(m1) |> print_html(decimals = 3)
+```
+
+## Summarizing Prior Distribution
+
+```{r}
+#| echo: true
+describe_prior(m1) |> print_html(decimals = 3)
+```
+
+## Are the Priors Informative?
+
+```{r}
+#| echo: true
+
+check_prior(m1, method = "gelman", simulate_priors = TRUE)
+```
+
+## Posterior Predictive Check 1
+
+```{r}
+#| echo: true
+
+pp_check(m1, plotfun = "hist", nreps = 5, bins = 25)
+```
+
+## Posterior Predictive Check 2
+
+```{r}
+#| echo: true
+
+pp_check(m1, plotfun = "stat_2d", stat = c("mean", "sd"))
+```
+
 
