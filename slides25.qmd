@@ -1,7 +1,7 @@
 ---
 title: "432 Class 25"
 author: Thomas E. Love, Ph.D.
-date: "2024-04-18"
+date: "2024-04-23"
 format:
   revealjs: 
     theme: dark
@@ -12,7 +12,7 @@ format:
     preview-links: auto
     date-format: iso
     logo: 432-2024-pic.png
-    footer: "432 Class 25 | 2024-04-18 | <https://thomaselove.github.io/432-2024/>"
+    footer: "432 Class 25 | 2024-04-23 | <https://thomaselove.github.io/432-2024/>"
 ---
 
 
@@ -587,8 +587,11 @@ ggplot(clusterings, aes(x = k, y = tot.withinss)) +
 
 ## Next Time
 
-Building and Assessing Statistical Work in 2024
+- Quiz 2 discussion
+- Building and Assessing Statistical Work in 2024
+- Maintaining and Enhancing What You've Learned
+    - [Statistical Problems to Document and To Avoid](https://discourse.datamethods.org/t/author-checklist/3407)
+    - [A CHecklist for statistical Assessment of Medical Papers (the CHAMP statement): explanation and elaboration](https://bjsm.bmj.com/content/55/18/1009.2)
+    - [Biostatistical Modeling Plan](https://www.fharrell.com/post/modplan) from Frank Harrell.
 
-- [Statistical Problems to Document and To Avoid](https://discourse.datamethods.org/t/author-checklist/3407)
-- [A CHecklist for statistical Assessment of Medical Papers (the CHAMP statement): explanation and elaboration](https://bjsm.bmj.com/content/55/18/1009.2)
-- [Biostatistical Modeling Plan](https://www.fharrell.com/post/modplan) from Frank Harrell.
+
