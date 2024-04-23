@@ -15,24 +15,11 @@ format:
     footer: "432 Class 25 | 2024-04-23 | <https://thomaselove.github.io/432-2024/>"
 ---
 
-
-## Today's Topic
-
-A brief introduction to ...
-
-- K-Means Clustering
-- Principal Components Analysis
-
-Examples:
-
-1. The 4000 biggest cities in the world
-2. The Palmer Penguins
-3. Arrest Rates in US States
-
 ## Setup
 
 ```{r}
 #| echo: true
+#| message: false
 
 knitr::opts_chunk$set(comment=NA)
 options(width = 80)
@@ -46,6 +33,61 @@ library(tidyverse)
 
 theme_set(theme_bw())
 ```
+
+## Bonus Topic
+
+OK, you ran a regression/fit a linear model and some of your variables are log-transformed.
+
+- We fit a linear model to predict the log of an outcome. How might we most effectively interpret the coefficients of that model? 
+- How does our thinking change if we only take the log of a predictor?
+- How about if we log both the outcome and the predictor?
+
+Source [is here](https://library.virginia.edu/data/articles/interpreting-log-transformations-in-a-linear-model) for further reference (also see Class 25 README.)
+
+## Only the outcome is log-transformed {.smaller}
+
+Exponentiate the coefficient. This gives the multiplicative factor for every one-unit increase in the independent variable. 
+
+- Example: the coefficient is 0.198. exp(0.198) = 1.218962. For every one-unit increase in the independent variable, our dependent variable increases by a factor of about 1.22, or 22%. Recall that multiplying a number by 1.22 is the same as increasing the number by 22%. 
+- Likewise, multiplying a number by, say 0.84, is the same as decreasing the number by 1 – 0.84 = 0.16, or 16%.
+
+from [this source](https://library.virginia.edu/data/articles/interpreting-log-transformations-in-a-linear-model)
+
+## Only a predictor is log-transformed {.smaller}
+
+- Divide the coefficient by 100. This tells us that a 1% increase in the independent variable increases (or decreases) the dependent variable by (coefficient/100) units. 
+
+- Example: the coefficient is 0.198. 0.198/100 = 0.00198. For every 1% increase in the independent variable, our dependent variable increases by about 0.002. 
+
+- For x percent increase, multiply the coefficient by log(1.x). 
+
+- Example: For every 10% increase in the independent variable, our dependent variable increases by about 0.198 * log(1.10) = 0.02
+
+from [this source](https://library.virginia.edu/data/articles/interpreting-log-transformations-in-a-linear-model)
+
+## Both y and x are log-transformed {.smaller}
+
+Interpret the coefficient as the percent increase in the dependent variable for every 1% increase in the independent variable. 
+
+- Example: the coefficient is 0.198. For every 1% increase in the independent variable, our dependent variable increases by about 0.20%. 
+- For x percent increase, calculate 1.x to the power of the coefficient, subtract 1, and multiply by 100. 
+- Example: For every 20% increase in the independent variable, our dependent variable increases by about (1.20 0.198 - 1) * 100 = 3.7 percent.
+
+from [this source](https://library.virginia.edu/data/articles/interpreting-log-transformations-in-a-linear-model)
+
+## Today's Main Topic
+
+A brief introduction to ...
+
+- K-Means Clustering
+- Principal Components Analysis
+
+Examples:
+
+1. The 4000 biggest cities in the world
+2. The Palmer Penguins
+3. Arrest Rates in US States
+
 
 # Clustering the 4,000 Biggest Cities in the World
 
